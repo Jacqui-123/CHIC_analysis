@@ -1,0 +1,390 @@
+## Reference Hydrometric Basin Network
+
+The data tidying, calculation of Indicators of Hydrologic Alteration (IHA) variables, ice variables, and freshet initiation for ~1000 reference stations in watersheds across Canada in order to assess Cold-Water Hydrologic Indicators of Change (CHIC) variables.
+
+Jacqui Levy
+
+```{r, echo=FALSE, include = FALSE, warning= FALSE}
+library(IHA)
+library(tidyverse)
+library(tidyhydat)
+library(zoo)
+library(lubridate)
+library(ggplot2)
+library(dataRetrieval)
+library(Kendall)
+library(knitr)
+library(plotly)
+library(data.table)
+library(manipulateWidget)
+
+#install.packages("IHA", repos="http://R-Forge.R-project.org")
+
+```
+
+
+##RHBN stations 
+```{r}
+
+stns <- read.csv("data/RHBN_Metadata.csv" ) %>% filter(DATA_TYPE == "Q") 
+
+```
+
+
+```{r}
+
+#sanity checks
+n_distinct(stns$STATION_NUMBER) #1058
+n_distinct(allstns$STATION_NUMBER) #1057
+
+stns_ids <- stns %>% select(STATION_NUMBER) %>% distinct                                
+allstns_ids <- allstns %>% select(STATION_NUMBER) %>% distinct
+
+anti_join(stns_ids, allstns_ids)
+# station 08LD001 not in master list of all stations, need to get this one or find out if need it or not 
+
+```
+
+
+```{r}
+
+#getting station numbers by ecoregion into a list 
+
+stn_num_eco <- stns %>% 
+  mutate(Ecoregion = ifelse(Ecoregion == '', "No Ecoregion", Ecoregion)) %>%
+  distinct(STATION_NUMBER, .keep_all = TRUE) %>%
+  group_by(Ecoregion) %>%
+  summarise(STATION_NUMBER = list(STATION_NUMBER))
+
+#loop through this and get several vectors of station ids
+
+ecoreglist <- list()
+for (i in unique(stn_num_eco$Ecoregion)) {
+    
+    df_subset <- stn_num_eco[stn_num_eco$Ecoregion == i,]
+    vec <-  as.vector(unlist(df_subset$STATION_NUMBER))
+    names(vec) <- i
+    ecoreglist[[i]] <- vec
+}
+
+#get separate dfs for flow for each ecoregion
+#takes too much memory, don't use for now - consider google collab?
+ # for (i in names(ecoreglist)){
+#  stn_num <- unlist(ecoreglist$i)
+#  df <- tidyhydat::hy_daily_flows(station_number = stn_num)
+ # assign(paste('',i,sep=''), df)
+  #names(ecoreglist) <- i
+  }
+
+```
+
+
+```{r}
+
+#Get dfs of daily flows for all ecoregions
+eastern_temp_forests <- tidyhydat::hy_daily_flows(station_number = ecoreglist$`Eastern Temperate Forests`)
+great_plains <- tidyhydat::hy_daily_flows(station_number = ecoreglist$`Great Plains`)
+hudson_plains <- tidyhydat::hy_daily_flows(station_number = ecoreglist$`Hudson Plains`)
+w_coast_forests <- tidyhydat::hy_daily_flows(station_number = ecoreglist$`Marine West Coast Forests`)
+no_ecoregion <- tidyhydat::hy_daily_flows(station_number = ecoreglist$`No Ecoregion`)
+n_american_deserts <- tidyhydat::hy_daily_flows(station_number = ecoreglist$`North American Deserts`)
+northern_forests <- tidyhydat::hy_daily_flows(station_number = ecoreglist$`Northern Forests`)
+nw_forested_mtns <- tidyhydat::hy_daily_flows(station_number = ecoreglist$`Northwest Forested Mountains`)
+taiga <- tidyhydat::hy_daily_flows(station_number = ecoreglist$Taiga)
+tundra <- tidyhydat::hy_daily_flows(station_number = ecoreglist$Tundra)
+
+rm(ecoreglist, stn_num_eco, df_subset)
+
+```
+
+```{r}
+
+#put all dfs in a list
+
+df_list <- list(eastern_temp_forests, great_plains, hudson_plains, w_coast_forests, no_ecoregion, n_american_deserts, northern_forests, nw_forested_mtns, taiga, tundra)
+names(df_list) <- c('eastern_temp_forests', 'great_plains', 'hudson_plains', 'w_coast_forests', 'no_ecoregion', 'n_american_deserts', 'northern_forests', 'nw_forested_mtns', 'taiga', 'tundra')
+
+```
+
+#tidying methods and codes adapted from eflows project
+
+```{r}
+source("scripts/Eflows_FUNCTIONS.R")
+
+#create a smaller practice/test df for developing workflows
+df_lst <- list(taiga, tundra)
+names(df_lst) <- c("taiga", "tundra")
+
+#note: need to source all the functions in another script
+
+#tidying function
+tidying <- function(df){
+  tidied <- df %>%
+  group_by(STATION_NUMBER) %>%
+  tidyr::complete(Date = seq.Date(as.Date("1969/10/1"), as.Date("2022/09/30"), by="day")) %>%
+  mutate(Date = as.Date(Date)) %>%
+  filter(Date >= "2018-10-01" & Date < "2023-10-01") #change this later on
+  return(tidied)
+}
+
+df_lst <- map(df_lst, tidying)
+
+
+#get df of distinct stations with desired columns
+stns_cs <- stns %>% 
+  mutate(Ecoregion = ifelse(Ecoregion == '', "No Ecoregion", Ecoregion)) %>%
+  distinct(STATION_NUMBER, .keep_all = TRUE) %>%
+  select(STATION_NUMBER, RHBN.N, Ecoregion, Data.Quality, Years.C, Years.S)
+
+#add the seasonal vs continuous data to the dfs in the list of dfs 
+for (i in seq_along(df_lst)){
+  df_lst[[i]] <- inner_join(df_lst[[i]], stns_cs, by = "STATION_NUMBER")
+}
+
+#add water year to all stations 
+df_lst <- map(df_lst, addWaterYear)
+
+
+#make a loop to add a day of the year and return a list of dfs, separated by ecoregion
+#(function doesn't work with map, need to open issue and fix for icicle r package)
+df_list <- list()
+for (i in seq_along(df_lst)) {
+  df_subset <- df_lst[[i]] #subset of df, by ecoregion
+  stn_all_split <- split(df_subset, df_subset$STATION_NUMBER) #split by station number to group them together
+  stn_all_split_doy <- lapply(stn_all_split, calc_day_of_wyear) #apply day of year function to each station
+  stn_all <- bind_rows(stn_all_split_doy, .id = "STATION_NUMBER") #bind the stations back into one dataframe
+  ecoregion <- stn_all$Ecoregion[i] #find the name of the ecoregion for that group of stations
+  df_list[[i]] <- stn_all     #append the new df to a list
+  names(df_list)[i] <- c(ecoregion) #name the list of dfs by their corresponding ecoregion
+}
+
+```
+
+
+```{r}
+
+#create a function to filter out the seasonal months for seasonal stations only (Data.Quality =)
+filter_seas <- function(data) {
+  df <- {{data}} %>%
+  filter(Data.Quality == 'S' & month(Date) %in% c(3,4,5,6,7,8,9,10))
+}
+
+df_lst <- map(df_lst, filter_seas)
+
+```
+
+
+#Plotting part 1
+```{r}
+
+#make a bunch of dfs for plotting and then put them in a list 
+taiga_test_yrs <- df_lst$Taiga %>%
+  dplyr::group_by(STATION_NUMBER) %>%
+  dplyr::summarise(Year = unique(waterYear)) %>%
+  arrange(STATION_NUMBER)
+
+tundra_test_yrs
+
+c <- ceiling(n_distinct(unique(df_lst$Taiga$STATION_NUMBER))/30)
+
+df_parts <- split(taiga_test_yrs, cut(seq_len(nrow(taiga_test_yrs)), breaks = c))
+
+taiga1 <- df_parts[[1]]
+taiga2 <- df_parts[[2]]
+taiga3 <- df_parts[[3]]
+
+df_list_toplot <- list(taiga1, taiga2, taiga3, tundra_test_yrs)
+names(df_list_toplot) <- c('taiga1', 'taiga2', 'taiga3', 'tundra_test_yrs')
+
+```
+
+Plotting part 2
+```{r}
+#plot data availability from list of dfs above
+
+for (i in seq_along(df_list_toplot)) {
+  df_subset <- df_list_toplot[[i]] #subset of df, by ecoregion
+
+#ecoregion <- df_list_toplot[i] #find the name of the ecoregion for that group of stations
+
+#yrs_full <- df_subset %>%
+  #dplyr::group_by(STATION_NUMBER) %>%
+  #dplyr::summarise(Year = unique(waterYear))
+
+p<- ggplot(df_subset, aes(x = Year, y = STATION_NUMBER)) +
+  geom_tile(fill = "blue", color = "white") +
+  theme_classic() +
+  ylab("") +
+ ggtitle(paste("Data Availability - ", names(df_list_toplot))[i]) +
+    theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust = 1, size= 9), plot.title = element_text(hjust = 0.5)) 
+print(p)
+}
+
+```
+
+
+
+Delete years with >3 missing days
+
+```{r}
+
+#delete missing data
+df_lst_del_yrs <-map(df_lst, calc_rle)
+
+
+```
+
+#Plotting post-deleting years
+```{r}
+#make a bunch of dfs for plotting and then put them in a list 
+taiga_test_del_yrs <- df_lst_del_yrs$Taiga %>%
+  dplyr::group_by(STATION_NUMBER) %>%
+  dplyr::summarise(Year = unique(waterYear)) %>%
+  arrange(STATION_NUMBER)
+
+tundra_test_del_yrs <- df_lst_del_yrs$Tundra %>%
+  dplyr::group_by(STATION_NUMBER) %>%
+  dplyr::summarise(Year = unique(waterYear)) %>%
+  arrange(STATION_NUMBER)
+
+
+c <- ceiling(n_distinct(unique(df_lst$Taiga$STATION_NUMBER))/30)
+
+df_parts <- split(taiga_test_yrs, cut(seq_len(nrow(taiga_test_yrs)), breaks = c))
+
+taiga1 <- df_parts[[1]]
+taiga2 <- df_parts[[2]]
+taiga3 <- df_parts[[3]]
+
+df_list_toplot_del <- list(taiga1, taiga2, taiga3, tundra_test_yrs)
+names(df_list_toplot_del) <- c('taiga1', 'taiga2', 'taiga3', 'tundra_test_del_yrs')
+
+
+
+```
+
+#plotting post deleting years
+```{r}
+
+#plot data availability from list of dfs above
+
+for (i in seq_along(df_list_toplot_del)) {
+  df_subset <- df_list_toplot_del[[i]] #subset of df, by ecoregion
+
+#ecoregion <- df_list_toplot[i] #find the name of the ecoregion for that group of stations
+
+#yrs_full <- df_subset %>%
+  #dplyr::group_by(STATION_NUMBER) %>%
+  #dplyr::summarise(Year = unique(waterYear))
+
+p<- ggplot(df_subset, aes(x = Year, y = STATION_NUMBER)) +
+  geom_tile(fill = "orange", color = "white") +
+  theme_classic() +
+  ylab("") +
+ ggtitle(paste("Data Availability - ", names(df_list_toplot_del))[i]) +
+    theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust = 1, size= 9), plot.title = element_text(hjust = 0.5)) 
+print(p)
+}
+
+
+```
+
+
+```{r}
+
+
+```
+
+
+```{r}
+
+
+```
+
+#IHA
+```{r}
+
+#tidying to do before IHA:
+mutate(waterYear = as.character(waterYear))
+  mutate(Date = as.Date(Date)) %>%
+  filter(waterYear > 1970) %>%
+  filter(waterYear < 2023)
+
+#reformat date and fill remaining missing values with preceding values
+stns_daymonthyear <- stns_ready %>%
+  mutate(Date = format(Date,"%d-%m-%Y")) %>%
+  group_by(STATION_NUMBER) %>%
+  fill(Value, .direction = 'downup') #maybe don't do this in this case?
+
+```
+ 
+```{r}
+
+
+
+```
+
+```{r}
+
+
+
+```
+
+```{r}
+
+#next find all years available for each station
+allstns <- df_list %>%
+mutate(Date = ymd(Date),  Year = format_ISO8601(Date, precision = "y"))
+filter(Year > 1969 & Year < 2024)
+
+allstns_dt %>%
+  group_by(STATION_NUMBER) %>%
+  summarize(years_with_data =toString(unique(Year)))
+
+#years with good data - delete years with >3 days a month of missing data, delete that whole year before doing calculations 
+
+
+```
+
+```{r}
+#graph the data availability for all of the stations before deleting years with 3 days of data missing
+
+graph_func <- function(data){
+  ecoregion <- {{data}}[i]
+
+yrs_full <- {{data}} %>%
+  dplyr::group_by(STATION_NUMBER) %>%
+  dplyr::summarise(Year = unique(waterYear))
+
+
+#graphing data availability
+p <- ggplot(yrs_full, aes(x = Year, y = STATION_NUMBER)) +
+  geom_tile(fill = "lightgreen", color = "white") +
+  theme_classic() +
+  ylab("") +
+  ggtitle("Data Availability - ") +
+    theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust = 1, size= 9), plot.title = element_text(hjust = 0.5))
+return(p)
+}
+
+
+map(df_lst, graph_func) #cant title by the name of each df if do it this way, need to use a loop
+
+
+
+```
+
+```{r}
+
+
+ggplot(diamonds, aes(carat, price)) + 
+  geom_hex()
+ggsave("output/diamonds.pdf")
+
+write_csv(diamonds, "output/diamonds.csv")
+
+summarise(STATION_NUMBER = paste(STATION_NUMBER,collapse = "','"))
+
+
+```
+
