@@ -74,7 +74,7 @@ library(dataRetrieval)
   calc_IHA <- function(data){
 
     flow_data <-  {{data}} %>%
-      select(Date, Value)
+      dplyr::select(Date, Value)
 
     flow_data <- zoo(flow_data$Value, order.by = as.Date(as.character(flow_data$Date), format = "%d-%m-%Y"))
     ## Run IHA analyses
@@ -91,15 +91,10 @@ library(dataRetrieval)
     group4_output <- as.data.frame(group4_output)
     group5_output <- as.data.frame(group5_output)
 
-    #to deal with one less row for group4 variables
-    if (nrow(group4_output) < nrow(group1_output)) {
-      group4_output <- group4_output %>%
-        add_row()
-    }
     ## Create output dataframe
-    IHA_output <- bind_cols(list(group1_output, group2_output, group3_output, group4_output, group5_output))
-    #make the years the column names instead of the rownames
-    IHA_output <- tibble::rownames_to_column(IHA_output, "Year")
+    dataframe_list <- list(group1_output, group2_output, group3_output, group4_output, group5_output)
+    IHA_allgroups <- do.call(qpcR:::cbind.na, dataframe_list)
+    IHA_with_years <- tibble::rownames_to_column(IHA_allgroups, "Year")
 
   }
 
@@ -113,25 +108,30 @@ library(dataRetrieval)
 #GROUP 1 FUNCTION - ICE COVER
 
   Group_1_ice_cover <- function(data) {
-    #function returns a df for the length of ice coverage, per water year
-    #works with one station, multiple years
-    #for multiple stations, split-apply-combine station
+    # Function returns a df for the length of ice coverage, per water year
+    # Works with one station, multiple years
+    # For multiple stations, split-apply-combine station
+
     lst <- list()
-
-    for (i in unique({{data}}$waterYear)) {
-
-      length_B_date  <- max(rle({{data}}$Symbol[{{data}}$waterYear == i] == "B")[[1]])
-      #append each value to a list
-      length_B_date <- length_B_date - 1
-      lst[[i]] <- length_B_date
+    data <- {{data}}
+    # Iterate over unique water years
+    for (i in unique(data$waterYear)) {
+      # Subset data for the current water year
+      year_data <- data[data$waterYear == i, ]
+      # Find the length of ice coverage
+      length_B_date <- max(rle(year_data$Symbol == "B")$lengths)
+      # Append length to list
+      lst[[as.character(i)]] <- length_B_date
     }
 
-    Ice_coverage_wy <- data.frame(waterYear = names(lst), Ice_coverage_wy = unlist(lst))
-    rownames(Ice_coverage_wy) <-NULL
-
+    # Create dataframe with waterYear and ice coverage
+    Ice_coverage_wy <- data.frame(waterYear = as.integer(names(lst)), B_date_length = unlist(lst))
+    #Ice_coverage_wy <- Ice_coverage_wy %>% rownames_to_column("Year")
+    rownames(Ice_coverage_wy) <- NULL
     return(Ice_coverage_wy)
-
   }
+
+
 
 
 #GROUP 2 FUNCTION - FREEZE AND THAW DATES
@@ -145,6 +145,7 @@ library(dataRetrieval)
     end_flow_lst <- list()
     start_doy_lst <- list()
     end_doy_lst <- list()
+    waterYear_lst <- list()
 
     for (i in unique({{data}}$waterYear)){
 
@@ -184,6 +185,8 @@ library(dataRetrieval)
       start_doy_lst[[i]] <- doy_start
       end_doy_lst[[i]] <- doy_end
 
+      waterYear_lst[[i]] <- rep(i, length(date_start))
+
     }
 
     Freeze_Date <- as.Date(unlist(start_date_lst))
@@ -192,14 +195,14 @@ library(dataRetrieval)
     Flow_Thaw <- unlist(end_flow_lst)
     Freeze_DOY <-unlist(start_doy_lst)
     Thaw_DOY <- unlist(end_doy_lst)
+    waterYear <- unlist(waterYear_lst)
 
-    df <- cbind.data.frame(Freeze_Date,Freeze_DOY,Flow_Freeze,Thaw_Date,Thaw_DOY, Flow_Thaw)
+    df <- data.frame(waterYear, Freeze_Date,Freeze_DOY,Flow_Freeze,Thaw_Date,Thaw_DOY, Flow_Thaw)
 
-    Ice_coverage_dates_flow <- rownames_to_column(df, "waterYear")
-    return(Ice_coverage_dates_flow)
+    # Ice_coverage_dates_flow <- rownames_to_column(df, "waterYear")
+    return(df)
 
   }
-
 
 #GROUP 3 FUNCTION - ONSET OF FRESHET
 

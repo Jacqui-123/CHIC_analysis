@@ -1,10 +1,11 @@
 ## Reference Hydrometric Basin Network
 
-The data tidying, calculation of Indicators of Hydrologic Alteration (IHA) variables, ice variables, and freshet initiation for ~1000 reference stations in watersheds across Canada in order to assess Cold-Water Hydrologic Indicators of Change (CHIC) variables.
+The data tidying, calculation of Indicators of Hydrologic Alteration (IHA) variables, ice variables, and freshet initiation for ~1300 reference stations in watersheds across Canada in order to assess Cold-Water Hydrologic Indicators of Change (CHIC) variables.
 
 Jacqui Levy
 
 ```{r, echo=FALSE, include = FALSE, warning= FALSE}
+
 library(IHA)
 library(tidyverse)
 library(tidyhydat)
@@ -23,8 +24,9 @@ library(manipulateWidget)
 ```
 
 
-##RHBN stations 
+##Get all RHBN stations 
 ```{r}
+#from govt canada RHBN list: https://www.canada.ca/en/environment-climate-change/services/water-overview/quantity/monitoring/survey/data-products-services/reference-hydrometric-basin-network.html
 
 stns <- read.csv("data/RHBN_Metadata.csv" ) %>% filter(DATA_TYPE == "Q") 
 
@@ -33,22 +35,7 @@ stns <- read.csv("data/RHBN_Metadata.csv" ) %>% filter(DATA_TYPE == "Q")
 
 ```{r}
 
-#sanity checks
-n_distinct(stns$STATION_NUMBER) #1058
-n_distinct(allstns$STATION_NUMBER) #1057
-
-stns_ids <- stns %>% select(STATION_NUMBER) %>% distinct                                
-allstns_ids <- allstns %>% select(STATION_NUMBER) %>% distinct
-
-anti_join(stns_ids, allstns_ids)
-# station 08LD001 not in master list of all stations, need to get this one or find out if need it or not 
-
-```
-
-
-```{r}
-
-#getting station numbers by ecoregion into a list 
+#put station numbers into a list, by ecoregion
 
 stn_num_eco <- stns %>% 
   mutate(Ecoregion = ifelse(Ecoregion == '', "No Ecoregion", Ecoregion)) %>%
@@ -67,21 +54,13 @@ for (i in unique(stn_num_eco$Ecoregion)) {
     ecoreglist[[i]] <- vec
 }
 
-#get separate dfs for flow for each ecoregion
-#takes too much memory, don't use for now - consider google collab?
- # for (i in names(ecoreglist)){
-#  stn_num <- unlist(ecoreglist$i)
-#  df <- tidyhydat::hy_daily_flows(station_number = stn_num)
- # assign(paste('',i,sep=''), df)
-  #names(ecoreglist) <- i
-  }
 
 ```
 
 
 ```{r}
 
-#Get dfs of daily flows for all ecoregions
+#Use tidyhydat database to get daily flows for all ecoregions and put all dataframes in a list
 eastern_temp_forests <- tidyhydat::hy_daily_flows(station_number = ecoreglist$`Eastern Temperate Forests`)
 great_plains <- tidyhydat::hy_daily_flows(station_number = ecoreglist$`Great Plains`)
 hudson_plains <- tidyhydat::hy_daily_flows(station_number = ecoreglist$`Hudson Plains`)
@@ -93,230 +72,391 @@ nw_forested_mtns <- tidyhydat::hy_daily_flows(station_number = ecoreglist$`North
 taiga <- tidyhydat::hy_daily_flows(station_number = ecoreglist$Taiga)
 tundra <- tidyhydat::hy_daily_flows(station_number = ecoreglist$Tundra)
 
-rm(ecoreglist, stn_num_eco, df_subset)
 
-```
-
-```{r}
 
 #put all dfs in a list
 
 df_list <- list(eastern_temp_forests, great_plains, hudson_plains, w_coast_forests, no_ecoregion, n_american_deserts, northern_forests, nw_forested_mtns, taiga, tundra)
 names(df_list) <- c('eastern_temp_forests', 'great_plains', 'hudson_plains', 'w_coast_forests', 'no_ecoregion', 'n_american_deserts', 'northern_forests', 'nw_forested_mtns', 'taiga', 'tundra')
 
+rm(ecoreglist, stn_num_eco, df_subset)
+
+rm(eastern_temp_forests, great_plains, hudson_plains, w_coast_forests, no_ecoregion, n_american_deserts, northern_forests, nw_forested_mtns, taiga, tundra )
+
 ```
 
-#tidying methods and codes adapted from eflows project
+
+## Tidying
+methods and codes adapted from eflows project
 
 ```{r}
 source("scripts/Eflows_FUNCTIONS.R")
 
-#create a smaller practice/test df for developing workflows
-df_lst <- list(taiga, tundra)
-names(df_lst) <- c("taiga", "tundra")
+#note: need to source the rest of the tidying functions in a .R script
 
-#note: need to source all the functions in another script
-
-#tidying function
+#tidying function - sequence full set of years
 tidying <- function(df){
   tidied <- df %>%
   group_by(STATION_NUMBER) %>%
   tidyr::complete(Date = seq.Date(as.Date("1969/10/1"), as.Date("2022/09/30"), by="day")) %>%
   mutate(Date = as.Date(Date)) %>%
-  filter(Date >= "2018-10-01" & Date < "2023-10-01") #change this later on
+  filter(Date >= "1970-10-01" & Date < "2023-10-01") 
   return(tidied)
 }
 
-df_lst <- map(df_lst, tidying)
-
+df_list <- map(df_list, tidying)
 
 #get df of distinct stations with desired columns
+#probably don't need anymore 
 stns_cs <- stns %>% 
   mutate(Ecoregion = ifelse(Ecoregion == '', "No Ecoregion", Ecoregion)) %>%
   distinct(STATION_NUMBER, .keep_all = TRUE) %>%
   select(STATION_NUMBER, RHBN.N, Ecoregion, Data.Quality, Years.C, Years.S)
 
 #add the seasonal vs continuous data to the dfs in the list of dfs 
-for (i in seq_along(df_lst)){
-  df_lst[[i]] <- inner_join(df_lst[[i]], stns_cs, by = "STATION_NUMBER")
+for (i in seq_along(df_list)){
+  df_list[[i]] <- inner_join(df_list[[i]], stns_cs, by = "STATION_NUMBER")
 }
 
 #add water year to all stations 
-df_lst <- map(df_lst, addWaterYear)
+df_list <- map(df_list, addWaterYear)
 
+```
 
+#Day of the Year
+```{r}
 #make a loop to add a day of the year and return a list of dfs, separated by ecoregion
-#(function doesn't work with map, need to open issue and fix for icicle r package)
-df_list <- list()
-for (i in seq_along(df_lst)) {
-  df_subset <- df_lst[[i]] #subset of df, by ecoregion
+#(doy function doesn't work with map, need to open issue and fix for icicle r package)
+
+dflst <- list()
+for (i in seq_along(df_list)) {
+  df_subset <- df_list[[i]] #subset of df, by ecoregion
   stn_all_split <- split(df_subset, df_subset$STATION_NUMBER) #split by station number to group them together
   stn_all_split_doy <- lapply(stn_all_split, calc_day_of_wyear) #apply day of year function to each station
   stn_all <- bind_rows(stn_all_split_doy, .id = "STATION_NUMBER") #bind the stations back into one dataframe
   ecoregion <- stn_all$Ecoregion[i] #find the name of the ecoregion for that group of stations
-  df_list[[i]] <- stn_all     #append the new df to a list
-  names(df_list)[i] <- c(ecoregion) #name the list of dfs by their corresponding ecoregion
+  dflst[[i]] <- stn_all     #append the new df to a list
+  names(dflst)[i] <- c(ecoregion) #name the list of dfs by their corresponding ecoregion
 }
 
 ```
 
+#Missing data 
+zero flow days and NAs: by month and annually 
 
 ```{r}
 
-#create a function to filter out the seasonal months for seasonal stations only (Data.Quality =)
-filter_seas <- function(data) {
-  df <- {{data}} %>%
-  filter(Data.Quality == 'S' & month(Date) %in% c(3,4,5,6,7,8,9,10))
+missing_days <- function(data) {
+  input_df <- {{data}}
+   results_df <- input_df %>%
+  dplyr::group_by(STATION_NUMBER, waterYear) %>%
+  dplyr::summarize(Jan_missingdays = sum(is.na(Value) & month(Date) == 1),
+            Feb_missingdays = sum(is.na(Value) & month(Date) == 2),
+            Mar_missingdays = sum(is.na(Value) & month(Date) == 3),
+            Apr_missingdays = sum(is.na(Value) & month(Date) == 4),
+            May_missingdays = sum(is.na(Value) & month(Date) == 5),
+            June_missingdays = sum(is.na(Value) & month(Date) == 6),
+            July_missingdays = sum(is.na(Value) & month(Date) == 7),
+            Aug_missingdays = sum(is.na(Value) & month(Date) == 8),
+            Sept_missingdays = sum(is.na(Value) & month(Date) == 9),
+            Oct_missingdays = sum(is.na(Value) & month(Date) == 10),
+            Nov_missingdays = sum(is.na(Value) & month(Date) == 11),
+            Dec_missingdays = sum(is.na(Value) & month(Date) == 12),
+            Annual_missingdays = sum(is.na(Value)),
+            Jan_zero_flow_days = sum(Value == 0 & month(Date) == 1),
+            Feb_zero_flow_days = sum(Value == 0 & month(Date) == 2),
+            Mar_zero_flow_days = sum(Value == 0 & month(Date) == 3),
+            Apr_zero_flow_days = sum(Value == 0 & month(Date) == 4),
+            May_zero_flow_days = sum(Value == 0 & month(Date) == 5),
+            Jun_zero_flow_days = sum(Value == 0 & month(Date) == 6),
+            Jul_zero_flow_days = sum(Value == 0 & month(Date) == 7),
+            Aug_zero_flow_days = sum(Value == 0 & month(Date) == 8),
+            Sep_zero_flow_days = sum(Value == 0 & month(Date) == 9),
+            Oct_zero_flow_days = sum(Value == 0 & month(Date) == 10),
+            Nov_zero_flow_days = sum(Value == 0 & month(Date) == 11),
+            Dec_zero_flow_days = sum(Value == 0 & month(Date) == 12), 
+            Annual_zero_flow_days = sum(Value == 0))       
+   
+   }
+
+df_missing_yrs_months  <- map(dflst, missing_days)
+
+
+```
+
+#Delete missing data 
+(by month)
+
+```{r}
+
+#delete any month with more than 3 missing days
+
+remove_months <- function(df) {
+  del_mnths <- df %>%
+    group_by(STATION_NUMBER, waterYear, month=month(Date)) %>%
+    filter(sum(is.na(Value)) <= 4) %>%
+  ungroup() %>%
+  select(-month)
+return(del_mnths)
 }
 
-df_lst <- map(df_lst, filter_seas)
+df_list_rem_months  <- map(dflst, remove_months)
 
 ```
 
 
-#Plotting part 1
+#Anuual mean & median
+ 
+
 ```{r}
 
-#make a bunch of dfs for plotting and then put them in a list 
-taiga_test_yrs <- df_lst$Taiga %>%
-  dplyr::group_by(STATION_NUMBER) %>%
-  dplyr::summarise(Year = unique(waterYear)) %>%
-  arrange(STATION_NUMBER)
+#Note: IHA group 1 currently measures the monthly median. Can switch to FUN = mean to get monthly means. 
 
-tundra_test_yrs
-
-c <- ceiling(n_distinct(unique(df_lst$Taiga$STATION_NUMBER))/30)
-
-df_parts <- split(taiga_test_yrs, cut(seq_len(nrow(taiga_test_yrs)), breaks = c))
-
-taiga1 <- df_parts[[1]]
-taiga2 <- df_parts[[2]]
-taiga3 <- df_parts[[3]]
-
-df_list_toplot <- list(taiga1, taiga2, taiga3, tundra_test_yrs)
-names(df_list_toplot) <- c('taiga1', 'taiga2', 'taiga3', 'tundra_test_yrs')
-
-```
-
-Plotting part 2
-```{r}
-#plot data availability from list of dfs above
-
-for (i in seq_along(df_list_toplot)) {
-  df_subset <- df_list_toplot[[i]] #subset of df, by ecoregion
-
-#ecoregion <- df_list_toplot[i] #find the name of the ecoregion for that group of stations
-
-#yrs_full <- df_subset %>%
-  #dplyr::group_by(STATION_NUMBER) %>%
-  #dplyr::summarise(Year = unique(waterYear))
-
-p<- ggplot(df_subset, aes(x = Year, y = STATION_NUMBER)) +
-  geom_tile(fill = "blue", color = "white") +
-  theme_classic() +
-  ylab("") +
- ggtitle(paste("Data Availability - ", names(df_list_toplot))[i]) +
-    theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust = 1, size= 9), plot.title = element_text(hjust = 0.5)) 
-print(p)
+calc_mn_md <- function(data){
+  input_data <- {{data}}
+  results <- input_data %>%
+    dplyr::group_by(STATION_NUMBER, waterYear) %>%
+    dplyr::summarize(annualmean = mean(Value), annualmedian = median(Value))
 }
 
-```
-
-
-
-Delete years with >3 missing days
-
-```{r}
-
-#delete missing data
-df_lst_del_yrs <-map(df_lst, calc_rle)
+df_yrly_means_med  <- map(df_list_rem_months, calc_mn_md)
 
 
 ```
 
-#Plotting post-deleting years
-```{r}
-#make a bunch of dfs for plotting and then put them in a list 
-taiga_test_del_yrs <- df_lst_del_yrs$Taiga %>%
-  dplyr::group_by(STATION_NUMBER) %>%
-  dplyr::summarise(Year = unique(waterYear)) %>%
-  arrange(STATION_NUMBER)
-
-tundra_test_del_yrs <- df_lst_del_yrs$Tundra %>%
-  dplyr::group_by(STATION_NUMBER) %>%
-  dplyr::summarise(Year = unique(waterYear)) %>%
-  arrange(STATION_NUMBER)
-
-
-c <- ceiling(n_distinct(unique(df_lst$Taiga$STATION_NUMBER))/30)
-
-df_parts <- split(taiga_test_yrs, cut(seq_len(nrow(taiga_test_yrs)), breaks = c))
-
-taiga1 <- df_parts[[1]]
-taiga2 <- df_parts[[2]]
-taiga3 <- df_parts[[3]]
-
-df_list_toplot_del <- list(taiga1, taiga2, taiga3, tundra_test_yrs)
-names(df_list_toplot_del) <- c('taiga1', 'taiga2', 'taiga3', 'tundra_test_del_yrs')
-
-
-
-```
-
-#plotting post deleting years
-```{r}
-
-#plot data availability from list of dfs above
-
-for (i in seq_along(df_list_toplot_del)) {
-  df_subset <- df_list_toplot_del[[i]] #subset of df, by ecoregion
-
-#ecoregion <- df_list_toplot[i] #find the name of the ecoregion for that group of stations
-
-#yrs_full <- df_subset %>%
-  #dplyr::group_by(STATION_NUMBER) %>%
-  #dplyr::summarise(Year = unique(waterYear))
-
-p<- ggplot(df_subset, aes(x = Year, y = STATION_NUMBER)) +
-  geom_tile(fill = "orange", color = "white") +
-  theme_classic() +
-  ylab("") +
- ggtitle(paste("Data Availability - ", names(df_list_toplot_del))[i]) +
-    theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust = 1, size= 9), plot.title = element_text(hjust = 0.5)) 
-print(p)
-}
-
-
-```
-
-
-```{r}
-
-
-```
-
-
-```{r}
-
-
-```
 
 #IHA
+
 ```{r}
 
-#tidying to do before IHA:
-mutate(waterYear = as.character(waterYear))
-  mutate(Date = as.Date(Date)) %>%
-  filter(waterYear > 1970) %>%
-  filter(waterYear < 2023)
 
-#reformat date and fill remaining missing values with preceding values
-stns_daymonthyear <- stns_ready %>%
-  mutate(Date = format(Date,"%d-%m-%Y")) %>%
+tidying_iha <- function(df){
+  #mutate(waterYear = as.character(waterYear)) %>%
+  stns_daymonthyear<- df %>%
+ mutate(Date = format(Date,"%d-%m-%Y")) %>%
   group_by(STATION_NUMBER) %>%
-  fill(Value, .direction = 'downup') #maybe don't do this in this case?
+  fill(Value, .direction = 'downup') 
+  return(stns_daymonthyear)
+}
+
+df_iha_ready <- lapply(df_list_rem_months, tidying_iha)
 
 ```
+ 
+ 
+```{r}
+
+#calculate IHA for full list
+#currently calcs montly medians - can add monthly means by altering group 1 IHA function
+
+scale_IHA <- function(data) {
+df <- {{data}}
+lst_stns <- split(df, df$STATION_NUMBER)
+lst_stns_IHA <- lapply(lst_stns, calc_IHA)
+IHA <- bind_rows(lst_stns_IHA, .id = "STATION_NUMBER")
+}
+
+ 
+ IHA_results_list <- lapply(df_iha_ready, function(df){
+   function_result <- scale_IHA(df)
+   function_result 
+ })
+
+
+ #ihaallresults <- bind_rows(IHA_results_list) #doesnt' give ecoregion name
+
+#ecoreg <- lapply(names(resultslist), function(Ecoregion_name){
+ # df<-lst[[Ecoregion_name]]
+#  df$Ecoregion <- Ecoregion_name
+ # df   })
+
+#write.csv(ihaallresults, "iharesults.csv")
+
+```
+
+
+#B dates and ice variables  
+
+```{r}
+
+
+ymd <- function(data) {
+  
+  dfinput <- {{data}}
+  results_ymd <- dfinput %>%
+  mutate(Date = as.Date(Date, format = "%d-%m-%Y"))
+
+}
+
+df_ice_ready <- lapply(dflst, ymd)
+
+#dflst
+#df_iha_ready
+
+```
+
+
+```{r}
+
+#Ice Variables group 1
+
+scale_ice_g1 <- function(data) {
+df <- {{data}}
+lst_stns <- split(df, df$STATION_NUMBER)
+lst_stns_IHA <- lapply(lst_stns, Group_1_ice_cover)
+Ice_g1 <- bind_rows(lst_stns_IHA, .id = "STATION_NUMBER")
+}
+
+ 
+ Ice_g1_results_list <- lapply(df_ice_ready, function(df){
+   function_result_ice_g1 <- scale_ice_g1(df)
+   function_result_ice_g1 
+ })
+
+ 
+#ecoreg <- lapply(names(function_result_ice_g1), function(Ecoregion_name){
+#  df<-lst[[Ecoregion_name]]
+#  df$Ecoregion <- Ecoregion_name
+ # df   })
+#ihaallresults <- bind_rows(resultslist)
+
+#write.csv(ihaallresults, "iharesults.csv")
+
+
+```
+
+
+
+```{r}
+
+#Ice Variables group 2
+
+scale_ice_g2 <- function(data) {
+df <- {{data}}
+lst_stns <- split(df, df$STATION_NUMBER)
+lst_stns_IHA <- lapply(lst_stns, Group_2_freeze_thaw)
+Ice_g1 <- bind_rows(lst_stns_IHA, .id = "STATION_NUMBER")
+}
+
+
+ Ice_g2_results_list <- lapply(df_ice_ready, function(df){
+   function_result_ice_g2 <- scale_ice_g2(df)
+   function_result_ice_g2
+ })
+
+ 
+#ecoreg <- lapply(names(function_result_ice_g2), function(Ecoregion_name){
+#  df<-lst[[Ecoregion_name]]
+#  df$Ecoregion <- Ecoregion_name
+ # df   })
+#ihaallresults <- bind_rows(resultslist)
+
+#write.csv(ihaallresults, "iharesults.csv")
+
+ 
+```
+
+
+
+```{r}
+
+STOP
+
+```
+
+
+
+#IHA variables for the open water season 
+
+```{r}
+
+tundra <- df_ice_ready$Tundra
+
+tundra_10ND002 <- tundra %>% filter(STATION_NUMBER == "10ND002")
+
+tundraice <- Ice_g2_results_list$Tundra
+
+```
+
+
+
+```{r}
+
+merged_tundra <- merge(tundra, tundraice, on = c(STATION_NUMBER, waterYear)) 
+
+```
+
+
+
+```{r}
+
+test <- merged_tundra %>%
+  mutate(Year = year(Date)) %>%
+select(-c(Parameter, RHBN.N, Ecoregion, Data.Quality, Years.C, Years.S)) %>%
+  filter(STATION_NUMBER =='10QC001' & Year == 2004 | Year == 2003 ) %>%
+  group_by(STATION_NUMBER, Year) %>%
+  filter(Date <= Freeze_Date) %>%
+  ungroup() %>%
+  group_by(STATION_NUMBER, waterYear) %>%
+  filter(Date >= Thaw_Date)
+
+
+#  filter(Date <= Thaw_Date  & Date >= Freeze_Date) 
+
+
+
+```
+
+
+#Next steps and questions:
+```{r}
+
+#next: 
+
+#then get the 1 day max flow between the b dates
+#and number of missing B dates 
+
+#for each station, 1-day max flow for open water season (in between the B dates) 
+#what B dates are missing? How many years are missing B dates? #days missing for each B dates? 
+
+#use B dates to determine the max flow in open water season and then calc IHA for those
+
+#IHA variables into tableau?
+#mean monthly, annual mean into tableau?
+#number of days missing for each month and year into tableau?
+#g1 and g2 into tableau?
+
+
+#then think about the E's etc and what to do..... 
+# make a list of what I need to know about the E'scx
+
+#1 work on freshet calculations and how to calculate freshet inflection - try shorter running means, first day when flow is 2x the previous day, see how long that happens for and do a midpoint
+#2 add "E" flag to cont. ice coverage function - look at the end date, and if there is flow week before or after. 
+#could also look at if last B date is >2 standard deviations, suggest look at, ie have a warning in the R package
+#3 use 30 year time period to calculate the mean/med and make sure each year is within 2 st deviations
+#4 calculate IHA 
+#5 calculate ice variables, with flag for E
+
+
+```
+
+
+```{r}
+
+
+
+```
+
+
+```{r}
+
+
+
+
+
+```
+ 
+ 
  
 ```{r}
 
@@ -324,12 +464,107 @@ stns_daymonthyear <- stns_ready %>%
 
 ```
 
+#Graphs: pre-removing months 
+
+```{r, fig.height= 10, warning= FALSE}
+
+#function to make list of dfs to plot
+list_to_plot <- function(df){
+  toplot <- df %>%
+  dplyr::group_by(STATION_NUMBER) %>%
+  dplyr::summarise(Year = unique(waterYear)) %>%
+  arrange(STATION_NUMBER)
+  return(toplot)
+}
+
+df_to_plot <- map(df_list, list_to_plot)
+
+#make a plot object list of dfs 
+
+plotlist <- list()
+for (i in seq_along(df_to_plot)) {
+  df_subset <- df_to_plot[[i]] #subset of df, by ecoregion
+
+p <- ggplot(df_subset, aes(x = Year, y = STATION_NUMBER)) +
+  geom_tile(fill = "blue", color = "white") +
+  theme_classic() +
+  ylab("") +
+ ggtitle(paste("Data Availability - ", names(df_to_plot))[i]) +
+    theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust = 1, size= 8), plot.title = element_text(hjust = 0.5), axis.text.y = element_text(size = 5)) 
+  plotlist[[i]] <- p     
+
+}
+
+names(plotlist) <- c('eastern_temp_forests', 'great_plains', 'hudson_plains', 'w_coast_forests', 'no_ecoregion', 'n_american_deserts', 'northern_forests', 'nw_forested_mtns', 'taiga', 'tundra')
+
+```
+
+
 ```{r}
+
+#save all plots to output file 
+for (i in names(plotlist)){
+  plot <- plotlist[[i]]
+  filename <- paste0("output/", i, ".png")
+  ggsave(filename, plot)
+}
+
+```
+
+#Graphs: post-removing months 
+
+```{r, fig.height= 10, warning= FALSE}
+
+df_to_plot <- map(df_list_rem_months, list_to_plot)
+
+#make a plot object list of dfs 
+
+plotlist <- list()
+for (i in seq_along(df_to_plot)) {
+  df_subset <- df_to_plot[[i]] #subset of df, by ecoregion
+
+p <- ggplot(df_subset, aes(x = Year, y = STATION_NUMBER)) +
+  geom_tile(fill = "orange", color = "white") +
+  theme_classic() +
+  ylab("") +
+ ggtitle(paste("Data Availability - ", names(df_to_plot))[i]) +
+    theme(axis.text.x = element_text(angle = 90, vjust = .5, hjust = 1, size= 8), plot.title = element_text(hjust = 0.5), axis.text.y = element_text(size = 5)) 
+  plotlist[[i]] <- p     
+
+}
+
+names(plotlist) <- c('eastern_temp_forests_2', 'great_plains_2', 'hudson_plains_2', 'w_coast_forests_2', 'no_ecoregion_2', 'n_american_deserts_2', 'northern_forests_2', 'nw_forested_mtns_2', 'taiga_2', 'tundra_2')
+
+
+#save all plots to output file 
+for (i in names(plotlist)){
+  plot <- plotlist[[i]]
+  filename <- paste0("output/", i, ".png")
+  ggsave(filename, plot)
+}
+
+```
+
+
+
+```{r}
+
 
 
 
 ```
 
+
+```{r}
+
+#Delete years with >3 missing days 
+
+#delete missing data
+#df_lst_del_yrs <-map(df_lst, calc_rle)
+
+```
+
+#random code 
 ```{r}
 
 #next find all years available for each station
@@ -339,7 +574,7 @@ filter(Year > 1969 & Year < 2024)
 
 allstns_dt %>%
   group_by(STATION_NUMBER) %>%
-  summarize(years_with_data =toString(unique(Year)))
+  summarize(years_with_data = toString(unique(Year)))
 
 #years with good data - delete years with >3 days a month of missing data, delete that whole year before doing calculations 
 
@@ -369,8 +604,55 @@ return(p)
 
 
 map(df_lst, graph_func) #cant title by the name of each df if do it this way, need to use a loop
+```
+
+```{r}
+#make a bunch of dfs for plotting and then put them in a list 
+et_test_full <- df_list$eastern_temp_forests %>%
+  dplyr::group_by(STATION_NUMBER) %>%
+  dplyr::summarise(Year = unique(waterYear)) %>%
+  arrange(STATION_NUMBER)
+
+c <- ceiling(n_distinct(unique(df_lst$Taiga$STATION_NUMBER))/30)
+
+df_parts <- split(taiga_test_yrs, cut(seq_len(nrow(taiga_test_yrs)), breaks = c))
+
+taiga1 <- df_parts[[1]]
+taiga2 <- df_parts[[2]]
+taiga3 <- df_parts[[3]]
+
+df_list_toplot <- list(taiga1, taiga2, taiga3, tundra_test_yrs)
+names(df_list_toplot) <- c('taiga1', 'taiga2', 'taiga3', 'tundra_test_yrs')
 
 
+```
+
+
+```{r}
+#don't run this anymore, see function remove_months.... where just remove where there are more than three days of missing data
+# function to filter out the seasonal months for seasonal stations only 
+#filter_seas <- function(data) {
+ # df <- {{data}} %>%
+#  filter(Data.Quality == 'S' & month(Date) %in% c(3,4,5,6,7,8,9,10))
+#}
+
+#df_lst <- map(df_lst, filter_seas)
+#df_lst_filter <- map(dflst, filter_seas)
+
+```
+
+
+```{r}
+
+#sanity checks
+n_distinct(stns$STATION_NUMBER) #1058
+n_distinct(allstns$STATION_NUMBER) #1057
+
+stns_ids <- stns %>% select(STATION_NUMBER) %>% distinct                                
+allstns_ids <- allstns %>% select(STATION_NUMBER) %>% distinct
+
+anti_join(stns_ids, allstns_ids)
+# station 08LD001 not in master list of all stations, need to get this one or find out if need it or not 
 
 ```
 
