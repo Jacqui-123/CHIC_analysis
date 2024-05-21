@@ -206,7 +206,6 @@ df_list_rem_months  <- map(dflst, remove_months)
 
 
 #Anuual mean & median
- 
 
 ```{r}
 
@@ -344,7 +343,7 @@ Ice_g1 <- bind_rows(lst_stns_IHA, .id = "STATION_NUMBER")
    function_result_ice_g2
  })
 
- 
+
 #ecoreg <- lapply(names(function_result_ice_g2), function(Ecoregion_name){
 #  df<-lst[[Ecoregion_name]]
 #  df$Ecoregion <- Ecoregion_name
@@ -355,9 +354,6 @@ Ice_g1 <- bind_rows(lst_stns_IHA, .id = "STATION_NUMBER")
 
  
 ```
-
-
-
 ```{r}
 
 STOP
@@ -365,43 +361,65 @@ STOP
 ```
 
 
-
-#IHA variables for the open water season 
+#First and last B dates for each water year 
+wy == 8
 
 ```{r}
 
-tundra <- df_ice_ready$Tundra
+#test dfs
+tundra_10ND002_1980 <- tundra_10ND002 %>% filter(waterYear >= 1980)
 
-tundra_10ND002 <- tundra %>% filter(STATION_NUMBER == "10ND002")
+wytest <- tundra_10ND002 %>% select(-c(waterYear))
 
-tundraice <- Ice_g2_results_list$Tundra
+tundra_10ND002_wytest <- add_water_year(wytest, 8)  %>%
+filter(waterYear >= 1980)
 
 ```
 
 
-
 ```{r}
 
-merged_tundra <- merge(tundra, tundraice, on = c(STATION_NUMBER, waterYear)) 
-
-```
-
-
-
-```{r}
-
-test <- merged_tundra %>%
-  mutate(Year = year(Date)) %>%
-select(-c(Parameter, RHBN.N, Ecoregion, Data.Quality, Years.C, Years.S)) %>%
-  filter(STATION_NUMBER =='10QC001' & Year == 2004 | Year == 2003 ) %>%
-  group_by(STATION_NUMBER, Year) %>%
-  filter(Date <= Freeze_Date) %>%
-  ungroup() %>%
+test <- tundra_10ND002_wytest %>%
   group_by(STATION_NUMBER, waterYear) %>%
-  filter(Date >= Thaw_Date)
+  mutate(as.Date(Date)) %>%
+  mutate(first_B = ifelse(Symbol == "B" & !is.na(Symbol), Date, NA),
+         first_B = ifelse(any(!is.na(first_B)), min(first_B, na.rm = TRUE), NA),
+         first_B = as.Date(first_B)) %>%
+  mutate(last_B = ifelse(Symbol == "B" & !is.na(Symbol), Date, NA),
+         last_B = ifelse(any(!is.na(last_B)), max(last_B, na.rm = TRUE), NA),
+         last_B = as.Date(last_B)) 
+
+#filter to get closed water data
+test %>%
+  group_by(STATION_NUMBER, waterYear) %>%
+  filter(Date > first_B & Date < last_B) 
+ 
+#filter to get open water data --> doesn't work
+test %>%
+  group_by(STATION_NUMBER, waterYear) %>%
+  filter(Date > first_B & Date > last_B)
 
 
-#  filter(Date <= Thaw_Date  & Date >= Freeze_Date) 
+```
+
+
+```{r}
+
+
+
+```
+
+
+
+```{r}
+
+
+
+```
+
+
+```{r}
+
 
 
 
@@ -411,31 +429,29 @@ select(-c(Parameter, RHBN.N, Ecoregion, Data.Quality, Years.C, Years.S)) %>%
 #Next steps and questions:
 ```{r}
 
-#next: 
+#annual variables:
+#number missing dates, annual, sd etc.
 
-#then get the 1 day max flow between the b dates
-#and number of missing B dates 
+#B dates: 
+#mean, med, sd of flow data 1991-2021 (for each B date)
+#number days, Bs/Es/As/NAs between first/last B date
+#Ratio # days to Bs
+#number missing flows before/after each B date
+#number and type of flags before/after each B date
+#mean, med, sd of first/last B date over 30 yrs and see if all stations are between this
+#missing B dates 
+#(rtn df with all of this)
 
-#for each station, 1-day max flow for open water season (in between the B dates) 
-#what B dates are missing? How many years are missing B dates? #days missing for each B dates? 
+#variables:
+#OW: all IHA, annual vars
+#CL: all IHA
 
-#use B dates to determine the max flow in open water season and then calc IHA for those
+#put in tableau?
 
-#IHA variables into tableau?
-#mean monthly, annual mean into tableau?
-#number of days missing for each month and year into tableau?
-#g1 and g2 into tableau?
-
-
-#then think about the E's etc and what to do..... 
-# make a list of what I need to know about the E'scx
-
-#1 work on freshet calculations and how to calculate freshet inflection - try shorter running means, first day when flow is 2x the previous day, see how long that happens for and do a midpoint
-#2 add "E" flag to cont. ice coverage function - look at the end date, and if there is flow week before or after. 
-#could also look at if last B date is >2 standard deviations, suggest look at, ie have a warning in the R package
-#3 use 30 year time period to calculate the mean/med and make sure each year is within 2 st deviations
-#4 calculate IHA 
-#5 calculate ice variables, with flag for E
+#freshet:
+#calculate freshet inflection - try shorter running means, first day when flow is 2x the previous day, see how long that happens for and do a midpoint
+#clustering using regime shape?
+#
 
 
 ```
@@ -449,8 +465,6 @@ select(-c(Parameter, RHBN.N, Ecoregion, Data.Quality, Years.C, Years.S)) %>%
 
 
 ```{r}
-
-
 
 
 
