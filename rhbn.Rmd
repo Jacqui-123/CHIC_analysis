@@ -24,11 +24,16 @@ library(manipulateWidget)
 ```
 
 
-##Get all RHBN stations 
+##Get RHBN stations 
 ```{r}
 #from govt canada RHBN list: https://www.canada.ca/en/environment-climate-change/services/water-overview/quantity/monitoring/survey/data-products-services/reference-hydrometric-basin-network.html
 
 stns <- read.csv("data/RHBN_Metadata.csv" ) %>% filter(DATA_TYPE == "Q") 
+
+stns <- stns %>%
+  mutate(STATION_NUMBER = toupper(STATION_NUMBER)) %>%
+  distinct(STATION_NUMBER, .keep_all = TRUE) %>%
+  arrange()
 
 ```
 
@@ -54,7 +59,6 @@ for (i in unique(stn_num_eco$Ecoregion)) {
     ecoreglist[[i]] <- vec
 }
 
-
 ```
 
 
@@ -72,16 +76,12 @@ nw_forested_mtns <- tidyhydat::hy_daily_flows(station_number = ecoreglist$`North
 taiga <- tidyhydat::hy_daily_flows(station_number = ecoreglist$Taiga)
 tundra <- tidyhydat::hy_daily_flows(station_number = ecoreglist$Tundra)
 
-
-
-#put all dfs in a list
-
-df_list <- list(eastern_temp_forests, great_plains, hudson_plains, w_coast_forests, no_ecoregion, n_american_deserts, northern_forests, nw_forested_mtns, taiga, tundra)
-names(df_list) <- c('eastern_temp_forests', 'great_plains', 'hudson_plains', 'w_coast_forests', 'no_ecoregion', 'n_american_deserts', 'northern_forests', 'nw_forested_mtns', 'taiga', 'tundra')
+df_all <- bind_rows(eastern_temp_forests, great_plains, hudson_plains, w_coast_forests, no_ecoregion, n_american_deserts, northern_forests, nw_forested_mtns, taiga, tundra )
 
 rm(ecoreglist, stn_num_eco, df_subset)
 
 rm(eastern_temp_forests, great_plains, hudson_plains, w_coast_forests, no_ecoregion, n_american_deserts, northern_forests, nw_forested_mtns, taiga, tundra )
+
 
 ```
 
@@ -90,58 +90,117 @@ rm(eastern_temp_forests, great_plains, hudson_plains, w_coast_forests, no_ecoreg
 methods and codes adapted from eflows project
 
 ```{r}
+
 source("scripts/Eflows_FUNCTIONS.R")
+source("scripts/add_water_year.R")
 
-#note: need to source the rest of the tidying functions in a .R script
-
-#tidying function - sequence full set of years
-tidying <- function(df){
-  tidied <- df %>%
-  group_by(STATION_NUMBER) %>%
-  tidyr::complete(Date = seq.Date(as.Date("1969/10/1"), as.Date("2022/09/30"), by="day")) %>%
-  mutate(Date = as.Date(Date)) %>%
-  filter(Date >= "1970-10-01" & Date < "2023-10-01") 
-  return(tidied)
-}
-
-df_list <- map(df_list, tidying)
-
-#get df of distinct stations with desired columns
-#probably don't need anymore 
+#df of ecoregions and station_#s
 stns_cs <- stns %>% 
   mutate(Ecoregion = ifelse(Ecoregion == '', "No Ecoregion", Ecoregion)) %>%
   distinct(STATION_NUMBER, .keep_all = TRUE) %>%
   select(STATION_NUMBER, RHBN.N, Ecoregion, Data.Quality, Years.C, Years.S)
 
-#add the seasonal vs continuous data to the dfs in the list of dfs 
-for (i in seq_along(df_list)){
-  df_list[[i]] <- inner_join(df_list[[i]], stns_cs, by = "STATION_NUMBER")
+
+df_all <- inner_join(df_all, stns_cs, by = "STATION_NUMBER")
+rm(stns, stns_cs)
+
+
+```
+
+Get complete set of days for each year - need to go back and filter Date > 1900 & < 2022
+
+```{r}
+
+
+tidying <- function(df){
+  tidied <- df %>%
+  group_by(STATION_NUMBER) %>%
+  tidyr::complete(Date = seq.Date(as.Date("1969-08-01"), as.Date("2022-07-31"), by="day")) %>%
+  mutate(Date = as.Date(Date)) %>%
+  filter(Date >= "1970-08-01" & Date <= "2022-07-31") %>%
+    ungroup()
+  
+  counts <- tidied %>%
+   mutate(Year = year(Date)) %>%
+  filter(Year > 1970 & Year < 2022) %>%
+  group_by(STATION_NUMBER, Year) %>%
+  summarize(count = n()) %>%
+  filter(count < 365) 
+  
+  if (nrow(counts) > 0) {
+    warning("There are STATION_NUMBER, Year groups that do not have 365 or 366 values:\n",
+            paste0("STATION_NUMBER: ", counts$STATION_NUMBER, 
+                       ", waterYear: ", counts$waterYear, 
+                       ", Values: ", counts$count, collapse = "\n")) 
+  }
+  
+    rm(counts)
+
+  return(tidied)
+  
+
 }
 
-#add water year to all stations 
-df_list <- map(df_list, addWaterYear)
+
+
+df_tidied <- tidying(df_all)
+  
+  
+```
+
+Water Year
+```{r}
+
+
+df_wy <- add_water_year(df_tidied, 8) 
 
 ```
 
 #Day of the Year
 ```{r}
-#make a loop to add a day of the year and return a list of dfs, separated by ecoregion
-#(doy function doesn't work with map, need to open issue and fix for icicle r package)
 
-dflst <- list()
-for (i in seq_along(df_list)) {
-  df_subset <- df_list[[i]] #subset of df, by ecoregion
-  stn_all_split <- split(df_subset, df_subset$STATION_NUMBER) #split by station number to group them together
-  stn_all_split_doy <- lapply(stn_all_split, calc_day_of_wyear) #apply day of year function to each station
-  stn_all <- bind_rows(stn_all_split_doy, .id = "STATION_NUMBER") #bind the stations back into one dataframe
-  ecoregion <- stn_all$Ecoregion[i] #find the name of the ecoregion for that group of stations
-  dflst[[i]] <- stn_all     #append the new df to a list
-  names(dflst)[i] <- c(ecoregion) #name the list of dfs by their corresponding ecoregion
-}
+calc_day_of_wyear <- function(data){
+  
+  grouped_df <- {{data}} %>%
+    group_by(STATION_NUMBER, waterYear) %>%
+    mutate(day_of_year = row_number()) %>%
+    ungroup()
+  
+  counts <- grouped_df %>%
+    group_by(STATION_NUMBER, waterYear) %>%
+    summarize(count = n()) 
+  
+  wrong_num_groups <- counts %>% filter(count !=365 & count != 366)
+  if(nrow(wrong_num_groups) > 0){
+            warning("The following groups do not have 365 or 366 values:\n", 
+            paste0("STATION_NUMBER: ", wrong_num_groups$STATION_NUMBER, 
+                       ", waterYear: ", wrong_num_groups$waterYear, 
+                       ", Values: ", wrong_num_groups$count, collapse = "\n"))
+}  
+  rm(counts, wrong_num_groups)
+  return(grouped_df)
+
+    }
+
+
+df_ready <- calc_day_of_wyear(df_wy)
+
+
+df_ready %>%
+  group_by(STATION_NUMBER, waterYear) %>%
+  summarize(count = n()) %>%
+  filter(count < 365 & count > 366)
+              
+
+#rm(df_wy, df_tidied)
+
 
 ```
 
-#Missing data 
+
+#Annual Calcualtions
+
+Missing data 
 zero flow days and NAs: by month and annually 
 
 ```{r}
@@ -179,52 +238,45 @@ missing_days <- function(data) {
    
    }
 
-df_missing_yrs_months  <- map(dflst, missing_days)
+df_missing  <- missing_days(df_ready)
 
 
 ```
 
-#Delete missing data 
-(by month)
+Annual and monthly mean & median
 
 ```{r}
 
-#delete any month with more than 3 missing days
 
-remove_months <- function(df) {
-  del_mnths <- df %>%
-    group_by(STATION_NUMBER, waterYear, month=month(Date)) %>%
-    filter(sum(is.na(Value)) <= 4) %>%
-  ungroup() %>%
-  select(-month)
-return(del_mnths)
-}
-
-df_list_rem_months  <- map(dflst, remove_months)
-
-```
-
-
-#Anuual mean & median
-
-```{r}
-
-#Note: IHA group 1 currently measures the monthly median. Can switch to FUN = mean to get monthly means. 
-
-calc_mn_md <- function(data){
+calc_mn_md_annual <- function(data){
   input_data <- {{data}}
   results <- input_data %>%
     dplyr::group_by(STATION_NUMBER, waterYear) %>%
-    dplyr::summarize(annualmean = mean(Value), annualmedian = median(Value))
+    dplyr::summarize(annual_mean = mean(Value), annual_median = median(Value), annual_sd = sd(Value))
+  return(results)
 }
 
-df_yrly_means_med  <- map(df_list_rem_months, calc_mn_md)
 
+
+
+calc_mn_md_month <- function(data){
+  input_data <- {{data}}
+  results <- input_data %>%
+      mutate(month = lubridate::month(Date, label = TRUE, abbr = TRUE)) %>%
+    dplyr::group_by(STATION_NUMBER, waterYear, month) %>%
+    dplyr::summarize(monthly_mean = round(mean(Value),1), monthly_median = round(median(Value), 1), monthly_std = round(sd(Value), 1)) %>%
+  pivot_wider(names_from = month, values_from = c(monthly_mean, monthly_median, monthly_std), names_prefix = "")
+    return(results)
+
+
+}
+
+df_yrly_means_med  <- calc_mn_md_annual(df_ready)
+df_mnthly_means_med <- calc_mn_md_month(df_ready)
 
 ```
 
-
-#IHA
+IHA
 
 ```{r}
 
@@ -234,47 +286,36 @@ tidying_iha <- function(df){
   stns_daymonthyear<- df %>%
  mutate(Date = format(Date,"%d-%m-%Y")) %>%
   group_by(STATION_NUMBER) %>%
-  fill(Value, .direction = 'downup') 
+  fill(Value, .direction = 'downup')  %>%
+    ungroup()
   return(stns_daymonthyear)
 }
 
-df_iha_ready <- lapply(df_list_rem_months, tidying_iha)
+df_iha_ready <- tidying_iha(df_ready)
 
 ```
  
  
 ```{r}
 
-#calculate IHA for full list
-#currently calcs montly medians - can add monthly means by altering group 1 IHA function
+#calculate IHA
+#IHA <- df %>%
+#group_by(STATION_NUMBER, waterYear) %>%
+ #group_modify(~calc_IHA(.x))
 
-scale_IHA <- function(data) {
-df <- {{data}}
-lst_stns <- split(df, df$STATION_NUMBER)
-lst_stns_IHA <- lapply(lst_stns, calc_IHA)
-IHA <- bind_rows(lst_stns_IHA, .id = "STATION_NUMBER")
-}
+df_IHA_annual <- calc_IHA(df_iha_ready)
 
- 
- IHA_results_list <- lapply(df_iha_ready, function(df){
-   function_result <- scale_IHA(df)
-   function_result 
- })
-
-
- #ihaallresults <- bind_rows(IHA_results_list) #doesnt' give ecoregion name
-
-#ecoreg <- lapply(names(resultslist), function(Ecoregion_name){
- # df<-lst[[Ecoregion_name]]
-#  df$Ecoregion <- Ecoregion_name
- # df   })
-
-#write.csv(ihaallresults, "iharesults.csv")
 
 ```
 
 
-#B dates and ice variables  
+```{r}
+
+STOP
+
+```
+
+#OLD- B dates and ice variables  
 
 ```{r}
 
@@ -289,8 +330,7 @@ ymd <- function(data) {
 
 df_ice_ready <- lapply(dflst, ymd)
 
-#dflst
-#df_iha_ready
+
 
 ```
 
@@ -354,32 +394,23 @@ Ice_g1 <- bind_rows(lst_stns_IHA, .id = "STATION_NUMBER")
 
  
 ```
+
+
 ```{r}
 
-STOP
+
 
 ```
 
 
 #First and last B dates for each water year 
-wy == 8
 
 ```{r}
 
-#test dfs
-tundra_10ND002_1980 <- tundra_10ND002 %>% filter(waterYear >= 1980)
-
-wytest <- tundra_10ND002 %>% select(-c(waterYear))
-
-tundra_10ND002_wytest <- add_water_year(wytest, 8)  %>%
-filter(waterYear >= 1980)
-
-```
-
-
-```{r}
-
-test <- tundra_10ND002_wytest %>%
+b_dates <- function(df){
+  
+  input_df <- {{df}} 
+  output_df <- input_df %>%
   group_by(STATION_NUMBER, waterYear) %>%
   mutate(as.Date(Date)) %>%
   mutate(first_B = ifelse(Symbol == "B" & !is.na(Symbol), Date, NA),
@@ -387,35 +418,142 @@ test <- tundra_10ND002_wytest %>%
          first_B = as.Date(first_B)) %>%
   mutate(last_B = ifelse(Symbol == "B" & !is.na(Symbol), Date, NA),
          last_B = ifelse(any(!is.na(last_B)), max(last_B, na.rm = TRUE), NA),
-         last_B = as.Date(last_B)) 
+         last_B = as.Date(last_B))
+  return(output_df)
+  
+}
+
+
+test <- df_ready %>% filter(STATION_NUMBER == "01AD002")
+testb <- b_dates(test)
+
+```
+
+
+```{r}
+
+#note: if station is seasonal and doesn't have the first b date before the station closes then don't include it in the 30 year calculations 
+#see if flow for first and last B date is within 30 yr average or not 
+
+meanmed_first_flow <- testb %>% 
+  filter(Date == first_B) %>%
+  filter(waterYear > 1990 | waterYear < 2021) %>%
+  dplyr::group_by(STATION_NUMBER) %>% 
+  dplyr::mutate(
+    firstB_mean_flow = if_else(Date == first_B, mean(Value, na.rm = TRUE), NA_real_ ),
+    firstB_median_flow = if_else(Date == first_B, median(Value, na.rm = TRUE), NA_real_),
+    firstB_std_flow = ifelse(Date == first_B, sd(Value, na.rm = TRUE), NA_real_)) %>%
+    mutate(flow_in_range_first_B = if_else(Value >= (firstB_mean_flow - firstB_std_flow*2) & Value <= (firstB_mean_flow + firstB_std_flow*2), "within range (2 std)", "not within range (2 std)")) 
+
+
+meanmed_last_flow <- testb %>% 
+  filter(Date == last_B) %>%
+  filter(waterYear > 1990 | waterYear < 2021) %>%
+  dplyr::group_by(STATION_NUMBER) %>% 
+  dplyr::mutate(
+    lastB_mean_flow = if_else(Date == last_B, round(mean(Value, na.rm = TRUE),1), NA_real_ ),
+    lastB_median_flow = if_else(Date == last_B, round(median(Value, na.rm = TRUE),1), NA_real_),
+    lastB_std_flow = ifelse(Date == last_B, round(sd(Value, na.rm = TRUE),1), NA_real_)) %>%
+      mutate(flow_in_range_last_B = if_else(Value >= (lastB_mean_flow - lastB_std_flow*2) & Value <= (lastB_mean_flow + lastB_std_flow*2), "within range (2 std)", "not within range (2 std)")) 
+
+
+
+#see if day of year for first and last B date is within 30 yr average or not 
+meanmed_first_doy <- testb %>% 
+  filter(Date == first_B) %>%
+  filter(waterYear > 1990 | waterYear < 2021) %>%
+  dplyr::group_by(STATION_NUMBER) %>% 
+  dplyr::mutate(
+    firstB_mean_doy = if_else(Date == first_B, round(mean(day_of_year, na.rm = TRUE),0), NA_real_ ),
+    firstB_median_doy = if_else(Date == first_B, round(median(day_of_year, na.rm = TRUE),0), NA_real_),
+    firstB_std_doy = ifelse(Date == first_B, round(sd(day_of_year, na.rm = TRUE),0), NA_real_)) %>%
+    mutate(flow_in_range_first_doy = if_else(day_of_year >= (firstB_mean_doy - firstB_std_doy*2) & day_of_year <= (firstB_mean_doy + firstB_std_doy*2), "within range (2 std)", "not within range (2 std)")) 
+
+
+meanmed_last_doy <- testb %>% 
+  filter(Date == last_B) %>%
+  filter(waterYear > 1990 | waterYear < 2021) %>%
+  dplyr::group_by(STATION_NUMBER) %>% 
+  dplyr::mutate(
+    lastB_mean_doy = if_else(Date == last_B, round(mean(day_of_year, na.rm = TRUE),0), NA_real_ ),
+    lastB_median_doy = if_else(Date == last_B, round(median(day_of_year, na.rm = TRUE),0), NA_real_),
+    lastB_std_doy = ifelse(Date == last_B, round(sd(day_of_year, na.rm = TRUE),0), NA_real_)) %>%
+  mutate(errorcheck = if_else(day_of_year >= (lastB_mean_doy - lastB_std_doy*2) & day_of_year <= (lastB_mean_doy + lastB_std_doy*2),  "within range (2 std)", "not within range (2 std)")) 
+
+
+```
+
+
+#closed water year and open water year
+```{r}
 
 #filter to get closed water data
-test %>%
+closedwater <- testb %>%
   group_by(STATION_NUMBER, waterYear) %>%
   filter(Date > first_B & Date < last_B) 
  
-#filter to get open water data --> doesn't work
-test %>%
+#filter to get open water data
+openwater <- testb %>%
   group_by(STATION_NUMBER, waterYear) %>%
   filter(Date > first_B & Date > last_B)
 
+#could make a function to get open/closed water data based on month of waterYear (ie nest the calc WY function w/in this)
+
 
 ```
+
+Ratio, es, bs, as, etc
+
+```{r}
+
+closedwater %>%
+  group_by(STATION_NUMBER, waterYear) %>%
+  summarize(number_days = n(), 
+            number_b = sum(Symbol == "B", na.rm = TRUE),
+            number_e = sum(Symbol == "E", na.rm = TRUE),
+            number_a = sum(Symbol == "A", na.rm = TRUE),
+            number_na = sum(is.na(Symbol )),
+            zero_flow_days = sum(Value == 0, na.rm = TRUE),
+            ratio_b_to_number_days = (number_b/number_days ))
+
+```
+
 
 
 ```{r}
 
+#7 days before and after each b date record number and types of symbols and number of missing flows
+
+testb %>%
+group_by(STATION_NUMBER, waterYear) %>%
+filter(Date >= first_B - 7 & Date <= first_B + 7) %>%
+   summarize(number_b = sum(Symbol == "B", na.rm = TRUE),
+            number_e = sum(Symbol == "E", na.rm = TRUE),
+            number_a = sum(Symbol == "A", na.rm = TRUE),
+            number_na = sum(is.na(Symbol)),
+            zero_flow_days = sum(Value == 0, na.rm = TRUE))
+
+testb %>%
+group_by(STATION_NUMBER, waterYear) %>%
+filter(Date >= last_B - 7 & Date <= last_B + 7) %>%
+   summarize(number_b = sum(Symbol == "B", na.rm = TRUE),
+            number_e = sum(Symbol == "E", na.rm = TRUE),
+            number_a = sum(Symbol == "A", na.rm = TRUE),
+            number_na = sum(is.na(Symbol)),
+            zero_flow_days = sum(Value == 0, na.rm = TRUE))
 
 
 ```
 
 
-
+#Run IHA and annual vars on open water and closed water data  
 ```{r}
 
 
 
+
 ```
+
 
 
 ```{r}
@@ -429,33 +567,55 @@ test %>%
 #Next steps and questions:
 ```{r}
 
+#start testing before and after - make a raw df before and after
+#work on branching 
+#start R package 
+#make lots of smaller functions and then add them together for a larger one.
+
 #annual variables:
-#number missing dates, annual, sd etc.
+#number missing dates, annual, sd etc. DONE
 
 #B dates: 
-#mean, med, sd of flow data 1991-2021 (for each B date)
-#number days, Bs/Es/As/NAs between first/last B date
-#Ratio # days to Bs
-#number missing flows before/after each B date
-#number and type of flags before/after each B date
-#mean, med, sd of first/last B date over 30 yrs and see if all stations are between this
+#mean, med, sd of flow data 1991-2021 (for each B date) DONE
+#number days, Bs/Es/As/NAs between first/last B date DONE
+#Ratio # days to Bs DONE
+#number missing flows before/after each B date DONE
+#number and type of flags before/after each B date DONE
+#mean, med, sd of first/last B date over 30 yrs and see if all stations are between this DONE
 #missing B dates 
 #(rtn df with all of this)
 
 #variables:
-#OW: all IHA, annual vars
-#CL: all IHA
+#OW: all IHA, annual vars DONE
+#CL: all IHA DONE
 
-#put in tableau?
 
 #freshet:
 #calculate freshet inflection - try shorter running means, first day when flow is 2x the previous day, see how long that happens for and do a midpoint
 #clustering using regime shape?
-#
+
 
 
 ```
 
+#Delete missing data 
+(by month)
+
+```{r}
+
+#delete any month with more than 3 missing days
+
+remove_months <- function(df) {
+  del_mnths <- df %>%
+    group_by(STATION_NUMBER, waterYear, month=month(Date)) %>%
+    filter(sum(is.na(Value)) <= 4) %>%
+  ungroup() %>%
+  select(-month)
+return(del_mnths)
+}
+
+df_list_rem_months  <- map(dflst, remove_months)
+```
 
 ```{r}
 
@@ -580,7 +740,6 @@ for (i in names(plotlist)){
 
 #random code 
 ```{r}
-
 #next find all years available for each station
 allstns <- df_list %>%
 mutate(Date = ymd(Date),  Year = format_ISO8601(Date, precision = "y"))
@@ -590,7 +749,66 @@ allstns_dt %>%
   group_by(STATION_NUMBER) %>%
   summarize(years_with_data = toString(unique(Year)))
 
-#years with good data - delete years with >3 days a month of missing data, delete that whole year before doing calculations 
+#years with good data - delete years with >3 days a month of missing data, delete that whole year before doing calculations
+```
+
+Scaling things up/working with lists
+```{r}
+
+#add the seasonal vs continuous data to the dfs in the list of dfs 
+for (i in seq_along(df_list)){
+  df_list[[i]] <- inner_join(df_list[[i]], stns_cs, by = "STATION_NUMBER")
+}
+
+
+df_list <- map(df_list, addWaterYear)
+
+```
+
+```{r}
+
+   
+scale_IHA <- function(data) {
+df <- {{data}}
+lst_stns <- split(df, df$STATION_NUMBER)
+lst_stns_IHA <- lapply(lst_stns, calc_IHA)
+IHA <- bind_rows(lst_stns_IHA, .id = "STATION_NUMBER")
+}
+
+ 
+ IHA_results_list <- lapply(df_iha_ready, function(df){
+   function_result <- scale_IHA(df)
+   function_result 
+ })
+
+
+ #ihaallresults <- bind_rows(IHA_results_list) #doesnt' give ecoregion name
+
+#ecoreg <- lapply(names(resultslist), function(Ecoregion_name){
+ # df<-lst[[Ecoregion_name]]
+#  df$Ecoregion <- Ecoregion_name
+ # df   })
+
+#write.csv(ihaallresults, "iharesults.csv")
+
+```
+
+day of year
+
+```{r}
+#make a loop to add a day of the year and return a list of dfs, separated by ecoregion
+#(doy function doesn't work with map, need to open issue and fix for icicle r package)
+
+dflst <- list()
+for (i in seq_along(df_list)) {
+  df_subset <- df_list[[i]] #subset of df, by ecoregion
+  stn_all_split <- split(df_subset, df_subset$STATION_NUMBER) #split by station number to group them together
+  stn_all_split_doy <- lapply(stn_all_split, calc_day_of_wyear) #apply day of year function to each station
+  stn_all <- bind_rows(stn_all_split_doy, .id = "STATION_NUMBER") #bind the stations back into one dataframe
+  ecoregion <- stn_all$Ecoregion[i] #find the name of the ecoregion for that group of stations
+  dflst[[i]] <- stn_all     #append the new df to a list
+  names(dflst)[i] <- c(ecoregion) #name the list of dfs by their corresponding ecoregion
+}
 
 
 ```
