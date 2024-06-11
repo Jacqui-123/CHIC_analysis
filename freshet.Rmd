@@ -1,0 +1,528 @@
+## Reference Hydrometric Basin Network - Freshet calculations
+
+Development of a global freshet calculation method
+
+
+Jacqui Levy
+
+```{r, echo=FALSE, include = FALSE, warning= FALSE}
+
+library(IHA)
+library(tidyverse)
+library(tidyhydat)
+library(zoo)
+library(lubridate)
+library(ggplot2)
+library(dataRetrieval)
+library(Kendall)
+library(knitr)
+library(plotly)
+library(data.table)
+library(manipulateWidget)
+library(cluster)
+library(factoextra)
+library(dendextend) #for comparing two dendrograms
+
+#install.packages("IHA", repos="http://R-Forge.R-project.org")
+
+```
+
+```{r}
+
+
+#freshet ideas:
+#calculate freshet inflection - try shorter running means, first day when flow is 2x the previous day, see how long that happens for and do a midpoint
+#clustering using regime shape?
+#try all freshet using regime shape
+
+#https://builtin.com/machine-learning/agglomerative-clustering
+#agglomerative hierarchical - bottom-up, each individual data point is its own cluster. Merged based on similarities between the distance or proximity matrix until their is one cluster. Really good at finding out small groups. but is computationally expensive because it clusters and says when a cluster is finished. Results are reproducible, vs k means which they are not. 
+
+#hierarchical is good at detecting anomalies - can root out errors/outliers if a cluster doesn't belong to any cluster. 
+#used in ecology, or in marketing - to group customers based on shared traits to inform marketing campaigns. 
+
+#(vs divisive which considers all clusters one cluster then splits)
+#(k means is good for larger datasets bc low computation complexity so it's faster)
+
+
+```
+
+
+## Part 1- Regime Shape 
+
+```{r}
+
+#use df from rhbn.Rmd -> added doy, wy, df_tidied function.  
+
+#add a column of weeks of the year to later group by 
+stn_all <- df_ready %>% 
+  group_by(STATION_NUMBER, waterYear) %>%
+  dplyr::mutate(weeks = rep(1:(ceiling(n()/7)), each = 7)[1:n()]) %>%  #ceiling always rounds up
+#make a new column, and mutate from 1 to the result of ceiling(n()/7), ie 1:52
+  mutate(weeks = if_else(weeks == 53, 52, weeks)) %>% #make the one day week 53 be week 52. Issue is that then there are 9 days in week 52 in leap years. Could just omit feb 29th completely?
+  ungroup()
+
+```
+
+Get RHBN stations 
+```{r}
+#from govt canada RHBN list: https://www.canada.ca/en/environment-climate-change/services/water-overview/quantity/monitoring/survey/data-products-services/reference-hydrometric-basin-network.html
+
+stns <- read.csv("data/RHBN_Metadata.csv" ) %>% filter(DATA_TYPE == "Q") 
+
+stns <- stns %>%
+  mutate(STATION_NUMBER = toupper(STATION_NUMBER)) %>%
+  distinct(STATION_NUMBER, .keep_all = TRUE) %>%
+  arrange()
+
+```
+
+Get unique stn numbers and put into a list to get gross discharge
+
+```{r}
+#put station numbers into a list, by ecoregion
+
+stn_num_s <- stns %>% 
+  #filter(Data.Quality != "S") %>%
+  mutate(Ecoregion = ifelse(Ecoregion == '', "No Ecoregion", Ecoregion)) %>%
+  distinct(STATION_NUMBER, .keep_all = TRUE) %>%
+  group_by(Ecoregion) %>%
+  summarise(STATION_NUMBER = list(STATION_NUMBER))
+
+#loop through this and get several vectors of station ids
+
+ecoreglist <- list()
+for (i in unique(stn_num_s$Ecoregion)) {
+    
+    df_subset <- stn_num_s[stn_num_s$Ecoregion == i,]
+    vec <-  as.vector(unlist(df_subset$STATION_NUMBER))
+    names(vec) <- i
+    ecoreglist[[i]] <- vec
+}
+
+
+```
+
+
+```{r}
+
+
+#Use tidyhydat database to get daily flows for all ecoregions and put all dataframes in a list
+eastern_temp_forests <- tidyhydat::hy_stations(station_number = ecoreglist$`Eastern Temperate Forests`)
+great_plains <- tidyhydat::hy_stations(station_number = ecoreglist$`Great Plains`)
+hudson_plains <- tidyhydat::hy_stations(station_number = ecoreglist$`Hudson Plains`)
+w_coast_forests <- tidyhydat::hy_stations(station_number = ecoreglist$`Marine West Coast Forests`)
+no_ecoregion <- tidyhydat::hy_stations(station_number = ecoreglist$`No Ecoregion`)
+n_american_deserts <- tidyhydat::hy_stations(station_number = ecoreglist$`North American Deserts`)
+northern_forests <- tidyhydat::hy_stations(station_number = ecoreglist$`Northern Forests`)
+nw_forested_mtns <- tidyhydat::hy_stations(station_number = ecoreglist$`Northwest Forested Mountains`)
+taiga <- tidyhydat::hy_stations(station_number = ecoreglist$Taiga)
+tundra <- tidyhydat::hy_stations(station_number = ecoreglist$Tundra)
+
+stn_all_drainage <- bind_rows(eastern_temp_forests, great_plains, hudson_plains, w_coast_forests, no_ecoregion, n_american_deserts, northern_forests, nw_forested_mtns, taiga, tundra )
+
+rm(ecoreglist, stn_num_s, df_subset, stns)
+
+rm(eastern_temp_forests, great_plains, hudson_plains, w_coast_forests, no_ecoregion, n_american_deserts, northern_forests, nw_forested_mtns, taiga, tundra )
+
+#join
+stn_flow_disch <- left_join(stn_all, stn_all_drainage, by = "STATION_NUMBER")  %>% select(-c(ends_with(".x")))
+
+
+```
+
+```{r}
+
+stn_flow_disch_c <- stn_flow_disch %>%
+  filter(Data.Quality == "C")
+
+rm(stn_flow_disch)
+
+```
+
+
+```{r}
+
+
+```
+
+
+```{r}
+
+#Use the functions built for this project to delete years with more than 14 consecutive days of missing data, and the tidyverse package to estimate missing observations using the last existing observation.
+
+stn_cln <- stn_flow_disch_c
+
+#delete years that have >14 days missing data using calc_rle function from functions I built for this project
+lst_stns_cln <- split(stn_cln, stn_cln$STATION_NUMBER )
+lst_stns_cln_rle <- lapply(lst_stns_cln, calc_rle)
+
+#unlist the station numbers
+stns_ready <- bind_rows(lst_stns_cln_rle, .id = "STATION_NUMBER") 
+
+rm(stn_cln, lst_stns_cln,lst_stns_cln_rle )
+
+#reformat date and fill remaining missing values with preceding values
+stns_daymonthyear_full <- stns_ready %>%
+  mutate(Date = format(Date,"%d-%m-%Y")) %>%
+  group_by(STATION_NUMBER) %>%
+  fill(Value, .direction = 'downup') %>%
+#calculate total discharge(runoff) 
+  mutate(runoff = ((Value * 3600 * 24) / (DRAINAGE_AREA_GROSS * 1000000) ))
+
+#to see how many years in each station - get rid of stations with not enough data
+stns_daymonthyear_full %>%
+  group_by(STATION_NUMBER) %>%
+  summarise(Year = toString(unique(waterYear)))
+
+```
+
+```{r}
+#weekly medians for each station's runoff, then for each week, calculate the z-score across all stations
+
+#calculate the weekly medians for each station and year, and then the station-wide medians
+stns_full_meds <- stns_daymonthyear_full %>%
+  group_by(STATION_NUMBER, waterYear, weeks) %>%
+  dplyr::summarise(wkly_median = median(runoff))%>%
+ group_by(STATION_NUMBER, weeks) %>% 
+ dplyr::summarise(meta_med = median(wkly_median))
+
+```
+
+
+```{r}
+
+#translate to z-score - use this df to graph later on
+stns_full_zf <- stns_full_meds %>%
+  group_by(STATION_NUMBER) %>%
+  mutate(z_scores = scale(meta_med)) %>%
+select(STATION_NUMBER, weeks, z_scores) %>%
+  na.omit()
+
+```
+
+
+```{r}
+
+#pivot so the weeks are columns, and stn numbers are the rows 
+stns_full_z <- stns_full_zf %>%
+pivot_wider(names_from = weeks, values_from = z_scores) %>%
+  column_to_rownames('STATION_NUMBER')
+
+```
+
+
+```{r}
+# check by calculating the mean and SD for each week across all sites
+
+stns_full_zf %>%
+  group_by(weeks) %>%
+  summarise(mean(z_scores))
+
+```
+
+
+####  clustering - full year dataset
+https://uc-r.github.io/hc_clustering 
+
+```{r}
+#find strongest linkage method ie way of measuring dissimilarity 
+#code taken from https://uc-r.github.io/hc_clustering
+
+m <- c( "average", "single", "complete", "ward")
+names(m) <- c( "average", "single", "complete", "ward")
+
+ac <- function(x) {
+  agnes(stns_full_z, method = x)$ac 
+}
+
+map_dbl(m, ac)
+
+#ward method has highest ac
+
+
+```
+
+
+```{r}
+#clustering for part 1 - hierarchical agglomerative (K means you need to pre-select parameters, )
+
+#dist <- dist(stns_full_z, method = "euclidean")
+#hclust <- hclust(dist, method = "complete")
+#plot(hclust, cex = 0.6, hang = -1)
+#clustering on the distance matrix gives same results as clustering on the z-scored data
+
+hclust <- agnes(stns_full_z, method = "ward") 
+
+#agglomerative coefficient is low, 0.56
+hclust$ac #likely 2-3 clusters 
+
+factoextra::fviz_dend(hclust, cex = 0.4, k = 3, k_colors = viridis::viridis_pal(option = 'D')(3),
+main = "Dendogram for agglomerative hierarchical clustering \n (distance matrix using flexible linkage method), agg coeff = .99")
+
+
+```
+
+```{r}
+
+library(factoextra)
+#plot cluster with groups = 3
+sub_grp <- cutree(hclust, k = 3)
+
+
+clusters_3 <- cutree(hclust, k=3)
+
+#cutree(as.hclust(hclust), k = 3)
+
+fviz_nbclust(stns_full_z, FUN = hcut, method = "wss", k.max = 8) #minimizes within cluster sum squares 
+
+#silhouette score, ranges from -1 to 1 and says how far apart from one another the clusters are. 1/-1. >.7 means they are easily distinguished from one another
+fviz_nbclust(stns_full_z, FUN = hcut, method = "silhouette", k.max = 8)
+
+factoextra::fviz_dend(hclust, cex = 0.4, k = 3, k_colors = viridis::viridis_pal()(3),
+main = "Dendogram for agglomerative hierarchical clustering \n (ward linkage method), ac = 0.56")
+
+gapstat <- fpc::cluster.stats(stns_full_z, sub_grp)
+gapstat$avg.silwidth #-.98, how similar a cluster is to its own cluster, goes from -1 to +1
+gapstat$ch   #-316.45 Gap stat tries to minimize the number of clusters
+
+```
+
+####PCA
+```{r}
+
+pca_result <- prcomp(stns_full_z, scale. = TRUE)
+
+summary(pca_result)
+pca_result$rotation
+
+data <- data.frame(pc1 = pca_result$x[,1], pc2 = pca_result$x[,2], Cluster = as.factor(clusters_3))
+
+plot(data$pc1, data$pc2, col = data$Cluster, pch = 19)
+
+
+ggbiplot::ggscreeplot(pca_result, type = "pev") + 
+  theme_classic()+
+  scale_x_continuous(breaks=c(1,2,3,4,5,6,7,8,9,10)) +
+  xlab("Principal component number") +
+  ylab("Proportion of explained variance")
+
+
+ggplot(data, aes(x = pc1, y = pc2, colour = Cluster)) +
+  geom_point() +
+  viridis::scale_color_viridis(discrete = TRUE) +
+  theme_bw() 
+
+```
+#Graph clustering results
+Line graph
+```{r}
+
+full_z_clusters <- as.data.frame(sub_grp) %>% 
+  dplyr::rename(cluster_number = sub_grp) %>%
+  rownames_to_column('STATION_NUMBER') %>%
+  left_join(stns_full_zf, by = 'STATION_NUMBER') %>%
+  group_by(cluster_number, weeks) %>%
+  dplyr::summarize(cluster_median = median(z_scores)) %>% 
+  complete(weeks = seq(1:52))
+
+#graph weekly z scores by cluster only 
+ggplot(full_z_clusters, aes(y = cluster_median, x = weeks, color = as.factor(cluster_number ))) +
+  geom_line(size = 1) +
+  theme_bw() +
+ ylab('Cluster median runoff (z-scores)') + 
+   xlab('Week number') +
+  ggtitle(" ") +
+      theme(plot.title = element_text(hjust = 0.5, size = 12)) +
+  scale_colour_viridis_d() +
+  labs(color = "Cluster Number") +
+  ggtitle("Regime Shape - Weekly Medians \n by Cluster (z-scores)")
+
+#combined <- m + z + plot_layout(guides = "collect") & theme(legend.position = "bottom")
+```
+
+Boxplots
+```{r}
+
+
+ggplot(full_z_clusters, aes(x = weeks, y= cluster_median, fill = as.factor(cluster_number))) +
+  geom_boxplot() +
+  stat_boxplot(geom = "errorbar") +
+  facet_wrap(~cluster_number) + 
+    theme_bw() +
+ #ylab('Z-score of IHA variables') + 
+   xlab('') +
+  ggtitle(" ") + 
+      theme(plot.title = element_text(hjust = 0.5, size = 12)) +
+  labs(color = "Cluster Number") +
+  #ggtitle("IHA variables") +
+  theme(axis.text.x = element_text(angle= 90)) +
+ viridis::scale_fill_viridis(discrete = TRUE) +
+  theme(legend.position = "none")
+
+
+```
+#Lat-longs 
+```{r}
+stn_flow_disch_c <- stn_flow_disch_c %>%
+ # select(-c(Date, Value, CONTRIBUTOR_ID, OPERATOR_ID, DATUM_ID, DRAINAGE_AREA_EFFECT, HYD_STATUS, SED_STATUS, Parameter, REAL_TIME, day_of_year, Symbol, weeks, waterYear, Symbol)) %>%
+  distinct()
+
+latlongcluster_3 <- as.data.frame(sub_grp) %>% 
+  dplyr::rename(cluster_number = sub_grp) %>%
+  rownames_to_column('STATION_NUMBER') %>%
+  left_join(stns_full_zf, by = 'STATION_NUMBER') %>%
+  select(-c(weeks, z_scores)) %>%
+  distinct() %>%
+  left_join(stn_flow_disch_c, by = "STATION_NUMBER")
+
+colSums(is.na(latlongcluster))
+
+latlongcluster[is.na(latlongcluster$cluster_number),]
+
+#write.csv(latlongcluster, "data/clusters_lat_long_cont_stns.csv")
+
+```
+
+All stns lat-longs
+
+Get RHBN stations 
+```{r}
+#from govt canada RHBN list: https://www.canada.ca/en/environment-climate-change/services/water-overview/quantity/monitoring/survey/data-products-services/reference-hydrometric-basin-network.html
+
+stns <- read.csv("data/RHBN_Metadata.csv" ) #%>% filter(DATA_TYPE == "Q") 
+
+stns <- stns %>%
+  mutate(STATION_NUMBER = toupper(STATION_NUMBER)) %>%
+  distinct(STATION_NUMBER, .keep_all = TRUE) %>%
+  arrange()
+
+```
+
+Get unique stn numbers and put into a list to get gross discharge
+
+```{r}
+#put station numbers into a list, by ecoregion
+
+stn_num_s <- stns %>% 
+  #filter(Data.Quality != "S") %>%
+  mutate(Ecoregion = ifelse(Ecoregion == '', "No Ecoregion", Ecoregion)) %>%
+  distinct(STATION_NUMBER, .keep_all = TRUE) %>%
+  group_by(Ecoregion) %>%
+  summarise(STATION_NUMBER = list(STATION_NUMBER))
+
+#loop through this and get several vectors of station ids
+
+ecoreglist <- list()
+for (i in unique(stn_num_s$Ecoregion)) {
+    
+    df_subset <- stn_num_s[stn_num_s$Ecoregion == i,]
+    vec <-  as.vector(unlist(df_subset$STATION_NUMBER))
+    names(vec) <- i
+    ecoreglist[[i]] <- vec
+}
+
+
+```
+
+
+```{r}
+
+
+#Use tidyhydat database to get daily flows for all ecoregions and put all dataframes in a list
+eastern_temp_forests <- tidyhydat::hy_stations(station_number = ecoreglist$`Eastern Temperate Forests`)
+great_plains <- tidyhydat::hy_stations(station_number = ecoreglist$`Great Plains`)
+hudson_plains <- tidyhydat::hy_stations(station_number = ecoreglist$`Hudson Plains`)
+w_coast_forests <- tidyhydat::hy_stations(station_number = ecoreglist$`Marine West Coast Forests`)
+no_ecoregion <- tidyhydat::hy_stations(station_number = ecoreglist$`No Ecoregion`)
+n_american_deserts <- tidyhydat::hy_stations(station_number = ecoreglist$`North American Deserts`)
+northern_forests <- tidyhydat::hy_stations(station_number = ecoreglist$`Northern Forests`)
+nw_forested_mtns <- tidyhydat::hy_stations(station_number = ecoreglist$`Northwest Forested Mountains`)
+taiga <- tidyhydat::hy_stations(station_number = ecoreglist$Taiga)
+tundra <- tidyhydat::hy_stations(station_number = ecoreglist$Tundra)
+
+stn_all_drainage <- bind_rows(eastern_temp_forests, great_plains, hudson_plains, w_coast_forests, no_ecoregion, n_american_deserts, northern_forests, nw_forested_mtns, taiga, tundra )
+
+rm(ecoreglist, stn_num_s, df_subset, stns)
+
+rm(eastern_temp_forests, great_plains, hudson_plains, w_coast_forests, no_ecoregion, n_american_deserts, northern_forests, nw_forested_mtns, taiga, tundra )
+
+#join
+stn_flow_disch <- left_join(stn_all, stn_all_drainage, by = "STATION_NUMBER")  %>% select(-c(ends_with(".x")))
+
+
+```
+
+Merge dfs 
+```{r}
+latlongcluster_6 <- latlongcluster_6 %>%
+  rename("cluster_number_6" = "cluster_number")
+latlongcluster_3 <- latlongcluster_3 %>%
+  rename("cluster_number_3" = "cluster_number")
+
+clusters <- merge(latlongcluster_6, latlongcluster_3, on = "STATION_NUMBER")
+
+stn_flow_disch <- stn_flow_disch %>%
+  select(-c(Date, Value, CONTRIBUTOR_ID, OPERATOR_ID, DATUM_ID, DRAINAGE_AREA_EFFECT, HYD_STATUS, SED_STATUS, Parameter, REAL_TIME, day_of_year, Symbol, weeks, waterYear, Symbol))  %>%
+  distinct()
+
+stn_flow_disch <- stn_flow_disch %>%
+  group_by(STATION_NUMBER) %>%
+  summarise(across(everything(), ~na.omit(.)[1]), .groups = "drop")
+
+
+allclust <- merge(stn_flow_disch, clusters, on = 'STATION_NUMBER', all.x = TRUE) 
+
+allclust <- allclust %>%
+  group_by(STATION_NUMBER) %>%
+  summarise(across(everything(), ~na.omit(.)[1]), .groups = "drop")
+
+
+write.csv(allclust, "data/allclust.csv")
+
+```
+
+
+## map clustering- full yr data
+
+```{r}
+
+#add subgroup (cluster) column to the df, join with lat-long and map
+stns_full_clusters <- stns_full_z %>%
+ dplyr::mutate(cluster_number = sub_grp) %>%
+  rownames_to_column('STATION_NUMBER')
+
+full_clust_latlong <- left_join(stns_full_clusters, stn_drainage, by = "STATION_NUMBER")
+
+map_function(full_clust_latlong)
+
+
+```
+
+
+```{r}
+
+
+
+```
+
+
+```{r}
+
+
+```
+
+```{r}
+```
+
+
+```{r}
+```
+
+```{r}
+```
+
+
+```{r}
+```
+
