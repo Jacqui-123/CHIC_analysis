@@ -48,7 +48,7 @@ library(dendextend) #for comparing two dendrograms
 ```
 
 
-## Part 1- Regime Shape 
+# Part 1-Regime Shape (Median)
 
 ```{r}
 
@@ -144,11 +144,26 @@ rm(stn_flow_disch)
 ```{r}
 
 
+#check nas
+check_nas <- function(df){
+  df <- {{df}}
+  df <- as.data.frame(df)
+  nas <- df[is.na(df$DRAINAGE_AREA_GROSS),]
+  col <- as.data.frame(colSums(is.na(nas))) %>% rename("sum_nas" ="colSums(is.na(nas))") %>%
+    filter(sum_nas == 0)
+    stn_num <- unique(nas$STATION_NUMBER)
+    
+  if (length(stn_num) > 0) {
+    warning("There are Nas for DRAINAGE_AREA_GROSS in the following station numbers: ", paste0(stn_num, collapse = ", ") )
+  } else {print("todo bien, no hay na's en estes estaciones")}
+    rm(stn_num, df, nas, col)
+}
+
+
 ```
 
 
 ```{r}
-
 #Use the functions built for this project to delete years with more than 14 consecutive days of missing data, and the tidyverse package to estimate missing observations using the last existing observation.
 
 stn_cln <- stn_flow_disch_c
@@ -162,22 +177,35 @@ stns_ready <- bind_rows(lst_stns_cln_rle, .id = "STATION_NUMBER")
 
 rm(stn_cln, lst_stns_cln,lst_stns_cln_rle )
 
+#remove station numbers with nas for gross discharge values
+#check_nas(stns_ready)
+
+```
+
+
+```{r}
+
 #reformat date and fill remaining missing values with preceding values
 stns_daymonthyear_full <- stns_ready %>%
+  filter(STATION_NUMBER != "08OA003" & STATION_NUMBER != "10ED007") %>%
   mutate(Date = format(Date,"%d-%m-%Y")) %>%
   group_by(STATION_NUMBER) %>%
   fill(Value, .direction = 'downup') %>%
-#calculate total discharge(runoff) 
-  mutate(runoff = ((Value * 3600 * 24) / (DRAINAGE_AREA_GROSS * 1000000) ))
+  #calculate total discharge(runoff) 
+  mutate(runoff = ((Value * 3600 * 24) / (DRAINAGE_AREA_GROSS * 1000000) )) 
 
 #to see how many years in each station - get rid of stations with not enough data
-stns_daymonthyear_full %>%
-  group_by(STATION_NUMBER) %>%
-  summarise(Year = toString(unique(waterYear)))
+#stns_daymonthyear_full %>%
+ # group_by(STATION_NUMBER) %>%
+#  summarise(Year = toString(unique(waterYear)))
+
+check_nas(stns_ready)
+
 
 ```
 
 ```{r}
+
 #weekly medians for each station's runoff, then for each week, calculate the z-score across all stations
 
 #calculate the weekly medians for each station and year, and then the station-wide medians
@@ -187,42 +215,67 @@ stns_full_meds <- stns_daymonthyear_full %>%
  group_by(STATION_NUMBER, weeks) %>% 
  dplyr::summarise(meta_med = median(wkly_median))
 
-```
 
+n_distinct(stns_full_meds$STATION_NUMBER)
+#738
 
-```{r}
 
 #translate to z-score - use this df to graph later on
 stns_full_zf <- stns_full_meds %>%
   group_by(STATION_NUMBER) %>%
+  #filter(STATION_NUMBER == "01AD002") %>%
   mutate(z_scores = scale(meta_med)) %>%
-select(STATION_NUMBER, weeks, z_scores) %>%
-  na.omit()
+select(STATION_NUMBER, weeks, z_scores) #%>%
+ # na.omit()
+
+
+#check by calculating the mean and SD for each week across all sites
+sd_mn <- stns_full_zf %>%
+  group_by(STATION_NUMBER) %>%
+  mutate( sd = round(sd(z_scores),8)) %>%
+  mutate(mn = round(mean(z_scores),8))
+
+if(!all(sd_mn$mn == 0)) {print("warning, mean values are not all equal to 0")} else {print("mean values equal 0")}
+if(!all(sd_mn$sd  == 1)) {print("warning, sd values are not all equal to 1")} else {print("std values equal 1")}
+
+check_nas(stns_full_zf)
 
 ```
 
 
+
 ```{r}
 
-#pivot so the weeks are columns, and stn numbers are the rows 
-stns_full_z <- stns_full_zf %>%
+#pivot so the weeks are columns, and stn numbers are the rows, and z-score by weeks
+stns_full <- stns_full_zf %>%
 pivot_wider(names_from = weeks, values_from = z_scores) %>%
   column_to_rownames('STATION_NUMBER')
+#use na.omit if needed
+
+
+#stns_full <- as.data.frame(scale(stns_full)) 
+
+#rowMeans(stns_full[1,])
+#round(apply(stns_full, 1, sd), 8)
+
 
 ```
 
 
 ```{r}
-# check by calculating the mean and SD for each week across all sites
 
-stns_full_zf %>%
-  group_by(weeks) %>%
-  summarise(mean(z_scores))
+#check by calculating the mean and SD for each week across all sites
+#mean should be 0, sd should be 1
+#mn <- round(colMeans(stns_full),8)
+#sd <- round(apply(stns_full, 2, sd), 8)
+
+#if(!all(mn == 0)) {print("warning, mean values are not all equal to 0")} else {print("mean values equal 0")}
+#if(!all(sd == 1)) {print("warning, sd values are not all equal to 1")} else {print("std values equal 1")}
 
 ```
 
 
-####  clustering - full year dataset
+####clustering - medians
 https://uc-r.github.io/hc_clustering 
 
 ```{r}
@@ -233,7 +286,7 @@ m <- c( "average", "single", "complete", "ward")
 names(m) <- c( "average", "single", "complete", "ward")
 
 ac <- function(x) {
-  agnes(stns_full_z, method = x)$ac 
+  agnes(stns_full, method = x)$ac 
 }
 
 map_dbl(m, ac)
@@ -245,20 +298,21 @@ map_dbl(m, ac)
 
 
 ```{r}
-#clustering for part 1 - hierarchical agglomerative (K means you need to pre-select parameters, )
+
+#clustering for part 1 - hierarchical agglomerative
 
 #dist <- dist(stns_full_z, method = "euclidean")
 #hclust <- hclust(dist, method = "complete")
 #plot(hclust, cex = 0.6, hang = -1)
 #clustering on the distance matrix gives same results as clustering on the z-scored data
 
-hclust <- agnes(stns_full_z, method = "ward") 
+hclust <- agnes(stns_full, method = "ward") 
 
-#agglomerative coefficient is low, 0.56
-hclust$ac #likely 2-3 clusters 
 
-factoextra::fviz_dend(hclust, cex = 0.4, k = 3, k_colors = viridis::viridis_pal(option = 'D')(3),
-main = "Dendogram for agglomerative hierarchical clustering \n (distance matrix using flexible linkage method), agg coeff = .99")
+hclust$ac #likely 4-6 clusters 
+
+factoextra::fviz_dend(hclust, cex = 0.4, k = 4, k_colors = viridis::viridis_pal(option = 'D')(4),
+main = "Dendogram for agglomerative hierarchical clustering \n (distance matrix using ward linkage method), agg coeff = .99")
 
 
 ```
@@ -266,32 +320,38 @@ main = "Dendogram for agglomerative hierarchical clustering \n (distance matrix 
 ```{r}
 
 library(factoextra)
-#plot cluster with groups = 3
-sub_grp <- cutree(hclust, k = 3)
+ka <- 3
+#plot cluster with groups = ka
+sub_grp <- cutree(hclust, k = ka)
 
-
-clusters_3 <- cutree(hclust, k=3)
+clusters_3 <- cutree(hclust, k=ka)
 
 #cutree(as.hclust(hclust), k = 3)
 
-fviz_nbclust(stns_full_z, FUN = hcut, method = "wss", k.max = 8) #minimizes within cluster sum squares 
+fviz_nbclust(stns_full, FUN = hcut, method = "wss", k.max = 10) #minimizes within cluster sum squares 
 
 #silhouette score, ranges from -1 to 1 and says how far apart from one another the clusters are. 1/-1. >.7 means they are easily distinguished from one another
-fviz_nbclust(stns_full_z, FUN = hcut, method = "silhouette", k.max = 8)
+fviz_nbclust(stns_full, FUN = hcut, method = "silhouette", k.max = 10)
 
-factoextra::fviz_dend(hclust, cex = 0.4, k = 3, k_colors = viridis::viridis_pal()(3),
-main = "Dendogram for agglomerative hierarchical clustering \n (ward linkage method), ac = 0.56")
+factoextra::fviz_dend(hclust, cex = 0.4, k = ka, k_colors = viridis::viridis_pal()(ka),
+main = "Dendogram for agglomerative hierarchical clustering \n (ward linkage method), ac = 0.99")
 
-gapstat <- fpc::cluster.stats(stns_full_z, sub_grp)
-gapstat$avg.silwidth #-.98, how similar a cluster is to its own cluster, goes from -1 to +1
-gapstat$ch   #-316.45 Gap stat tries to minimize the number of clusters
+gapstat <- fpc::cluster.stats(stns_full, sub_grp)
+gapstat$avg.silwidth #.12 how similar a cluster is to its own cluster, goes from -1 to +1
+gapstat$ch   #-124 Gap stat tries to minimize the number of clusters
+
+#for (k in 2:10) {
+ # clusters <- cutree(hclust, k = k)
+#  stats <- fpc::cluster.stats(stns_full, clusters)
+#  cat("Clusters:", k, "avg sil width", stats$avg.silwidth, "connectivity index:", stats$ch, "\n")
+#}
 
 ```
 
-####PCA
+####PCA - medians
 ```{r}
 
-pca_result <- prcomp(stns_full_z, scale. = TRUE)
+pca_result <- prcomp(stns_full, scale. = TRUE)
 
 summary(pca_result)
 pca_result$rotation
@@ -314,9 +374,14 @@ ggplot(data, aes(x = pc1, y = pc2, colour = Cluster)) +
   theme_bw() 
 
 ```
-#Graph clustering results
+####Graph clustering results
 Line graph
 ```{r}
+
+#stns_full_pivot <- stns_full %>%
+#  rownames_to_column("STATION_NUMBER") %>%
+#pivot_longer(cols = -STATION_NUMBER, names_to = 'weeks', values_to = 'z_scores') 
+
 
 full_z_clusters <- as.data.frame(sub_grp) %>% 
   dplyr::rename(cluster_number = sub_grp) %>%
@@ -326,8 +391,19 @@ full_z_clusters <- as.data.frame(sub_grp) %>%
   dplyr::summarize(cluster_median = median(z_scores)) %>% 
   complete(weeks = seq(1:52))
 
+
+#full_z_clusters <- as.data.frame(sub_grp) %>% 
+ # dplyr::rename(cluster_number = sub_grp) %>%
+#  rownames_to_column('STATION_NUMBER') %>%
+ # left_join(stns_full_pivot, by = 'STATION_NUMBER') %>%
+#  group_by(cluster_number, weeks) %>%
+#  dplyr::summarize(cluster_median = median(z_scores)) 
+
+
+
 #graph weekly z scores by cluster only 
-ggplot(full_z_clusters, aes(y = cluster_median, x = weeks, color = as.factor(cluster_number ))) +
+#y = cluster_median
+ggplot(full_z_clusters, aes(y = cluster_median, x = as.numeric(weeks), color = as.factor(cluster_number ))) +
   geom_line(size = 1) +
   theme_bw() +
  ylab('Cluster median runoff (z-scores)') + 
@@ -339,6 +415,7 @@ ggplot(full_z_clusters, aes(y = cluster_median, x = weeks, color = as.factor(clu
   ggtitle("Regime Shape - Weekly Medians \n by Cluster (z-scores)")
 
 #combined <- m + z + plot_layout(guides = "collect") & theme(legend.position = "bottom")
+
 ```
 
 Boxplots
@@ -362,10 +439,11 @@ ggplot(full_z_clusters, aes(x = weeks, y= cluster_median, fill = as.factor(clust
 
 
 ```
-#Lat-longs 
+####Lat-Longs 
 ```{r}
+
 stn_flow_disch_c <- stn_flow_disch_c %>%
- # select(-c(Date, Value, CONTRIBUTOR_ID, OPERATOR_ID, DATUM_ID, DRAINAGE_AREA_EFFECT, HYD_STATUS, SED_STATUS, Parameter, REAL_TIME, day_of_year, Symbol, weeks, waterYear, Symbol)) %>%
+  select(-c(Date, Value, CONTRIBUTOR_ID, OPERATOR_ID, DATUM_ID, DRAINAGE_AREA_EFFECT, HYD_STATUS, SED_STATUS, Parameter, REAL_TIME, day_of_year, Symbol, weeks,Years.S , waterYear, Symbol)) %>%
   distinct()
 
 latlongcluster_3 <- as.data.frame(sub_grp) %>% 
@@ -376,7 +454,7 @@ latlongcluster_3 <- as.data.frame(sub_grp) %>%
   distinct() %>%
   left_join(stn_flow_disch_c, by = "STATION_NUMBER")
 
-colSums(is.na(latlongcluster))
+colSums(is.na(latlongcluster_3))
 
 latlongcluster[is.na(latlongcluster$cluster_number),]
 
@@ -388,6 +466,7 @@ All stns lat-longs
 
 Get RHBN stations 
 ```{r}
+
 #from govt canada RHBN list: https://www.canada.ca/en/environment-climate-change/services/water-overview/quantity/monitoring/survey/data-products-services/reference-hydrometric-basin-network.html
 
 stns <- read.csv("data/RHBN_Metadata.csv" ) #%>% filter(DATA_TYPE == "Q") 
@@ -422,12 +501,10 @@ for (i in unique(stn_num_s$Ecoregion)) {
     ecoreglist[[i]] <- vec
 }
 
-
 ```
 
 
 ```{r}
-
 
 #Use tidyhydat database to get daily flows for all ecoregions and put all dataframes in a list
 eastern_temp_forests <- tidyhydat::hy_stations(station_number = ecoreglist$`Eastern Temperate Forests`)
@@ -450,11 +527,11 @@ rm(eastern_temp_forests, great_plains, hudson_plains, w_coast_forests, no_ecoreg
 #join
 stn_flow_disch <- left_join(stn_all, stn_all_drainage, by = "STATION_NUMBER")  %>% select(-c(ends_with(".x")))
 
-
 ```
 
 Merge dfs 
 ```{r}
+
 latlongcluster_6 <- latlongcluster_6 %>%
   rename("cluster_number_6" = "cluster_number")
 latlongcluster_3 <- latlongcluster_3 %>%
@@ -470,20 +547,68 @@ stn_flow_disch <- stn_flow_disch %>%
   group_by(STATION_NUMBER) %>%
   summarise(across(everything(), ~na.omit(.)[1]), .groups = "drop")
 
-
 allclust <- merge(stn_flow_disch, clusters, on = 'STATION_NUMBER', all.x = TRUE) 
 
 allclust <- allclust %>%
   group_by(STATION_NUMBER) %>%
   summarise(across(everything(), ~na.omit(.)[1]), .groups = "drop")
 
-
-write.csv(allclust, "data/allclust.csv")
+#write.csv(allclust, "data/allclust.csv")
 
 ```
 
 
-## map clustering- full yr data
+#workflow for multiple clusters
+```{r}
+
+ka <- 6
+#plot cluster with groups = ka
+sub_grp <- cutree(hclust, k = ka)
+
+#clusters_3 <- cutree(hclust, k=ka)
+
+latlongcluster_6 <- as.data.frame(sub_grp) %>% 
+  dplyr::rename(cluster_number = sub_grp) %>%
+  rownames_to_column('STATION_NUMBER') %>%
+  left_join(stns_full_zf, by = 'STATION_NUMBER') %>%
+  select(-c(weeks, z_scores)) %>%
+  distinct() %>%
+  left_join(stn_flow_disch_c, by = "STATION_NUMBER") %>%
+    rename("cluster_number_6" = "cluster_number")
+
+clusters_3_4 <- merge(latlongcluster_3, latlongcluster_4, on = "STATION_NUMBER")
+clusters_5_6 <- merge(latlongcluster_5, latlongcluster_6, on = "STATION_NUMBER")
+clusters_3_to_6 <- merge(clusters_3_4, clusters_5_6, on = "STATION_NUMBER")
+rm( clusters_3_4,clusters_5_6, latlongcluster_3, latlongcluster_4 )
+
+stn_flow_disch <- stn_flow_disch %>%
+  select(-c(Date, Value, CONTRIBUTOR_ID, OPERATOR_ID, DATUM_ID, DRAINAGE_AREA_EFFECT, HYD_STATUS, SED_STATUS, Parameter, REAL_TIME, day_of_year, Symbol, weeks, waterYear, Symbol))  %>%
+  distinct()
+
+stn_flow_disch <- stn_flow_disch %>%
+  group_by(STATION_NUMBER) %>%
+  summarise(across(everything(), ~na.omit(.)[1]), .groups = "drop")
+
+allclust <- merge(stn_flow_disch, clusters_3_to_6, on = 'STATION_NUMBER', all.x = TRUE) 
+
+allclust <- allclust %>%
+  group_by(STATION_NUMBER) %>%
+  summarise(across(everything(), ~na.omit(.)[1]), .groups = "drop") 
+
+
+#clusters_no_nas <- allclust[!is.na(allclust$cluster_number_3),]
+
+#write.csv(allclust, "allclust.csv")
+
+```
+
+
+```{r}
+
+```
+
+
+####map clustering- full yr data
 
 ```{r}
 
@@ -500,23 +625,148 @@ map_function(full_clust_latlong)
 ```
 
 
+##Fort McMurray
+```{r}
+stn_07DA001 <- tidyhydat::hy_daily_flows(station_number = "07DA001") %>% 
+  mutate(runoff = (Value/(133000*1000*1000)*1000*86400) ) #133,000 = Gross Drainage area in tidyhydat
+
+
+#stn_07DA001 <- add_water_year(stn_07DA001, 10) 
+
+stn_07DA001 <- stn_07DA001 %>%
+  mutate(Year = year(Date)) %>%
+  rename(waterYear = Year)
+
+stn_07DA001 <- calc_day_of_wyear(stn_07DA001)
+#Warning in calc_day_of_wyear(stn_07DA001) :
+#STATION_NUMBER: 07DA001, waterYear: 1957, Values: 92
+#STATION_NUMBER: 07DA001, waterYear: 1959, Values: 335
+#STATION_NUMBER: 07DA001, waterYear: 1963, Values: 334
+#STATION_NUMBER: 07DA001, waterYear: 1964, Values: 306
+
+stn_07DA001 <- stn_07DA001 %>%
+  select(-c(Value)) %>%
+  rename(Value = runoff)
+
+Group_3_freshet(stn_07DA001)
+```
+
+#log transform data
 ```{r}
 
+#check for 0s and Nas
+check_nas <- function(df, col_name, years_column){
 
+  indices <- which(is.na(df[[col_name]]))
+
+  if (length(indices) > 0){
+  years <- unique(df[[years_column]][indices])
+  
+  warning("There are NAs for the input column for the col_name for the following years:", "\n", paste(years, collapse = ","))
+}else {cat("No Na values found in",col_name, "\n")}
+}
+
+check_nas(stn_07DA001, col_name = 'Value', years_column = 'waterYear')
 
 ```
 
 
 ```{r}
 
+check_zeroes <- function(df, col_name, years_column){
+  indices <- which(df[[col_name]]==0)
+  
+  if (length(indices) > 0){
+  years <- unique(df[[years_column]][indices])
+  
+  warning("There are 0s for the input column for the value column for the following waterYears:\n", paste(years, collapse = ","))
+}else {cat("No Na values found in", col_name, "column\n")}
+}
+
+check_zeroes(stn_07DA001, col_name = 'Value', years_column = 'waterYear')
+
 
 ```
 
 ```{r}
+
+#log transform
+stn_07DA001_log <- stn_07DA001 %>%
+  filter(waterYear != 1969 & waterYear != 1969) %>%
+  mutate(log_runoff = log(Value)) 
+
+Group_3_freshet(stn_07DA001_log)
+
+```
+
+```{r}
+
+tidyhydat::hy_stations(station_number = "07DA001")
+tidyhydat::hy_stn_data_coll(station_number = "07DA001")
+tidyhydat::hy_stn_regulation(station_number = "07DA001")
+
 ```
 
 
 ```{r}
+stn_07DA001_1974 <- stn_07DA001 %>%
+  filter(waterYear == 1974) %>%
+  filter(month(Date) %in% c(3,4,5,6)) %>%
+  select(Value, day_of_year)
+
+model <- lm(data = stn_07DA001_1974, Value ~ day_of_year )
+
+predicted <- predict(model)
+
+plot(stn_07DA001_1974$day_of_year)
+lines(stn_07DA001_1974$day_of_year, predicted)
+
+dy <- diff(stn_07DA001_1974$Value) /diff(stn_07DA001_1974$day_of_year)
+
+inflect_index <- which(diff(sign(dy)) != 0) +1
+
+points(stn_07DA001_1974$day_of_year[inflect_index], stn_07DA001_1974$Value[inflect_index], pch = 16, col ="blue")
+legend("topleft", legend = "Inflection Point", pch = 16)
+
+726.68/3
+```
+
+
+```{r}
+
+data.frame(day_of_year = stn_07DA001_1974$day_of_year[inflect_index],
+           Value = stn_07DA001_1974$Value[inflect_index])
+
+
+```
+
+```{r}
+
+
+smoothed <- loess(Value ~ day_of_year, data = stn_07DA001_1974, span = 0.5)
+predicted_sm <- predict(smoothed)
+dy_dx <- diff(predicted_sm)/diff(stn_07DA001_1974$day_of_year)
+inflect_sm <- which(diff(sign(dy_dx)) != 0) + 1
+
+data.frame(day_of_year = stn_07DA001_1974$day_of_year[inflect_sm],
+           Value = stn_07DA001_1974$Value[inflect_sm])
+
+
+```
+
+
+```{r}
+smoothed <- loess(Value ~ day_of_year, data = stn_07DA001_1974, span = 0.5)
+predicted_sm <- predict(smoothed)
+dy_dx <- diff(predicted_sm)/diff(stn_07DA001_1974$day_of_year)
+dx_dy2 <- diff(dy_dx) / diff(stn_07DA001_1974$day_of_year[1:length(stn_07DA001_1974$day_of_year)-1])
+infle_in <- which(diff(sign(dx_dy2)) != 0) +1
+
+data.frame(day_of_year = stn_07DA001_1974$day_of_year[infle_in],
+           Value = stn_07DA001_1974$Value[infle_in])
+
+
+
 ```
 
 ```{r}

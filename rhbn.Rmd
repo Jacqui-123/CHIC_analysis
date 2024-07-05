@@ -21,6 +21,12 @@ library(manipulateWidget)
 
 #install.packages("IHA", repos="http://R-Forge.R-project.org")
 
+
+data <- c(1.61, 1.64, 2.38, 1.02, 2.21, 1.16, 1.22, 1.75, 1.66, 1.66, 2.78, 1.42, 0.481, 1.33, 1.64, 1.36, 2.15, 3.06, 1.53, 1.44, 1.01, 1.44, 1.85, 1.1, 1.32, 1.88, 1.18, 2.2, 1.61, 1.33, 1.97, 2.5, 1.46, 1.66, 2.12, 2.33, 2.25, 1.24, 1.19, 0.808, 1.34, 1.74, 1.8, 2.37, 2, 1.86, 1.15, 1.75, 0.6, 3.26, 2.58, 2.19, 1.55, 1.7, 1.9, 2.07, 1.73, 2.63, 1.52, 2.5, 0.885, 3.04, 4.21, 2.29)
+shapiro.test(data)
+
+hist(data, breaks = 10)
+qqnorm(data)
 ```
 
 
@@ -152,7 +158,7 @@ Water Year
 ```{r}
 
 
-df_wy <- add_water_year(df_tidied, 8) 
+df_wy <- add_water_year(df_tidied, 10) 
 
 ```
 
@@ -193,10 +199,13 @@ df_ready %>%
               
 
 #rm(df_wy, df_tidied)
-
+STOP
 
 ```
 
+```{r}
+
+```
 
 #Annual Calcualtions
 
@@ -331,7 +340,6 @@ ymd <- function(data) {
 df_ice_ready <- lapply(dflst, ymd)
 
 
-
 ```
 
 
@@ -352,7 +360,7 @@ Ice_g1 <- bind_rows(lst_stns_IHA, .id = "STATION_NUMBER")
    function_result_ice_g1 
  })
 
- 
+
 #ecoreg <- lapply(names(function_result_ice_g1), function(Ecoregion_name){
 #  df<-lst[[Ecoregion_name]]
 #  df$Ecoregion <- Ecoregion_name
@@ -408,7 +416,7 @@ Ice_g1 <- bind_rows(lst_stns_IHA, .id = "STATION_NUMBER")
 ```{r}
 
 b_dates <- function(df){
-  
+
   input_df <- {{df}} 
   output_df <- input_df %>%
   group_by(STATION_NUMBER, waterYear) %>%
@@ -424,8 +432,41 @@ b_dates <- function(df){
 }
 
 
-test <- df_ready %>% filter(STATION_NUMBER == "01AD002")
-testb <- b_dates(test)
+bdates <- b_dates(df_ready)
+
+test <- bdates %>% filter(STATION_NUMBER == "01AD003") %>%
+  distinct() 
+
+
+bdates$first_B <- as.character(bdates$first_B)
+bdates$first_B[is.na(bdates$first_B)] <- "no B date"
+
+bdates$last_B <- as.character(bdates$last_B)
+bdates$last_B[is.na(bdates$last_B)] <- "no B date"
+
+
+bdates_yesno <- bdates %>%
+  select(STATION_NUMBER,waterYear, first_B, last_B) %>%
+  distinct() %>%
+  group_by(STATION_NUMBER, waterYear) %>%
+  mutate(hasBdate = if_else(first_B == "no B date", first_B, "B date"))
+
+bdates_yesno <- bdates_yesno %>%
+      group_by(STATION_NUMBER, waterYear) %>%
+    summarize(yes_B_date = sum(hasBdate =="B date"), 
+          no_B_date = sum(hasBdate == "no B date") ) %>%
+          group_by(STATION_NUMBER) %>%
+    summarize(count_yes = sum(yes_B_date), count_no = sum(no_B_date)) %>%
+    mutate(moreorlessBs = ifelse(count_no < count_yes, "more Bs", "less Bs"))
+
+#get lat-longs but also get rid of seasonal stations
+stn_all_drainage <- stn_all_drainage %>%
+  select(STATION_NUMBER, STATION_NAME, LATITUDE, LONGITUDE) %>%
+  full_join(stns, by = 'STATION_NUMBER')
+
+merged <- merge(stn_all_drainage, bdates_yesno, on = "STATION_NUMBER" )
+
+#write.csv(merged, "B_dates_yes_no.csv")
 
 ```
 
@@ -572,6 +613,17 @@ filter(Date >= last_B - 7 & Date <= last_B + 7) %>%
 #start R package 
 #make lots of smaller functions and then add them together for a larger one.
 
+
+#B dates:
+#look at 
+#missing B dates 
+
+
+#freshet:
+#calculate freshet inflection - try shorter running means, first day when flow is 2x the previous day, see how long that happens for and do a midpoint
+#clustering using regime shape and magnitude?
+
+
 #annual variables:
 #number missing dates, annual, sd etc. DONE
 
@@ -582,17 +634,12 @@ filter(Date >= last_B - 7 & Date <= last_B + 7) %>%
 #number missing flows before/after each B date DONE
 #number and type of flags before/after each B date DONE
 #mean, med, sd of first/last B date over 30 yrs and see if all stations are between this DONE
-#missing B dates 
 #(rtn df with all of this)
 
 #variables:
 #OW: all IHA, annual vars DONE
 #CL: all IHA DONE
 
-
-#freshet:
-#calculate freshet inflection - try shorter running means, first day when flow is 2x the previous day, see how long that happens for and do a midpoint
-#clustering using regime shape?
 
 
 
