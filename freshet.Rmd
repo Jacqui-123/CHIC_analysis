@@ -626,7 +626,9 @@ map_function(full_clust_latlong)
 
 
 ##Fort McMurray
+use this tidying
 ```{r}
+
 stn_07DA001 <- tidyhydat::hy_daily_flows(station_number = "07DA001") %>% 
   mutate(runoff = (Value/(133000*1000*1000)*1000*86400) ) #133,000 = Gross Drainage area in tidyhydat
 
@@ -639,16 +641,18 @@ stn_07DA001 <- stn_07DA001 %>%
 
 stn_07DA001 <- calc_day_of_wyear(stn_07DA001)
 #Warning in calc_day_of_wyear(stn_07DA001) :
-#STATION_NUMBER: 07DA001, waterYear: 1957, Values: 92
-#STATION_NUMBER: 07DA001, waterYear: 1959, Values: 335
-#STATION_NUMBER: 07DA001, waterYear: 1963, Values: 334
-#STATION_NUMBER: 07DA001, waterYear: 1964, Values: 306
+#STATION_NUMBER: 07DA001, waterYear: 1957, Values: 92 #del year
+#STATION_NUMBER: 07DA001, waterYear: 1959, Values: 335 #np
+#STATION_NUMBER: 07DA001, waterYear: 1963, Values: 334 #np
+#STATION_NUMBER: 07DA001, waterYear: 1964, Values: 306 #np
 
 stn_07DA001 <- stn_07DA001 %>%
   select(-c(Value)) %>%
-  rename(Value = runoff)
+  rename(Value = runoff) %>%
+  filter(waterYear != 1957)
 
 Group_3_freshet(stn_07DA001)
+
 ```
 
 #log transform data
@@ -756,6 +760,7 @@ data.frame(day_of_year = stn_07DA001_1974$day_of_year[inflect_sm],
 
 
 ```{r}
+
 smoothed <- loess(Value ~ day_of_year, data = stn_07DA001_1974, span = 0.5)
 predicted_sm <- predict(smoothed)
 dy_dx <- diff(predicted_sm)/diff(stn_07DA001_1974$day_of_year)
@@ -765,13 +770,237 @@ infle_in <- which(diff(sign(dx_dy2)) != 0) +1
 data.frame(day_of_year = stn_07DA001_1974$day_of_year[infle_in],
            Value = stn_07DA001_1974$Value[infle_in])
 
+```
+#Fit n-degree polynomial to data 
 
+```{r}
+ggplot(stn_07DA001_1993, aes(x = day_of_year, y = Value)) +
+  #geom_line() +
+  geom_point() +
+  geom_vline(xintercept = 81) + #manual
+  geom_vline(xintercept = 109, color = 'red') #burns 
+```
+
+```{r}
+
+stn_07DA001_1993 <- stn_07DA001 %>% filter(waterYear == 1993)
+
+model <- lm(Value ~ poly(day_of_year, 3), data = stn_07DA001_1993)
+coefs <- coef(model)
+summary(model)
+
+```
+
+
+```{r}
+
+poly_func <- function(x){
+  coefs[1] + coefs[2] * x + coefs[3] * x^2 +coefs[4] *x^3
+}
+
+```
+
+
+
+
+```{r}
+
+first_deriv <- function(x){
+  coefs[2] + 2 * coefs[3] *x + 3 * coefs[4] *x^2
+  
+  }
+
+```
+
+
+```{r}
+
+second_deriv <- function(x){
+  2 * coefs[3] + 6 * coefs[4] * x
+}
+  
+```
+
+
+```{r}
+
+x_vals <- seq(min(stn_07DA001_1993$day_of_year), max(stn_07DA001_1993$day_of_year), length.out = 10000 )
+second_deriv_vals <- sapply(x_vals, second_deriv)
+
+sign_changes <- which(diff(sign(second_deriv_vals)) != 0)
+inflection_points  <- x_vals[sign_changes]
+
+data.frame(day_of_year = inflection_points, Value = poly_func(inflection_points))
+
+
+```
+
+
+```{r}
+second_deriv_df <- data.frame(day_of_the_year = x_vals, second_derivative = second_deriv_vals )
+
+```
+
+
+```{r}
+
+ggplot(second_deriv_df, aes(x = day_of_the_year, y = second_derivative))+
+  geom_line(color = 'blue') +
+  geom_hline(yintercept = 0, color = 'red') 
+
+```
+
+
+```{r}
+
+inflec_values <- sapply(infl_pnts, poly_fn)
+
+
+```
+
+
+```{r}
+
+data.frame(infl_pnts = infl_pnts, inflec_values = inflec_values)
+
+```
+
+
+
+```{r}
+
+
+data <- stn_07DA001
+# Define the rolling window size
+window_size <- 16
+
+# Function to calculate the slope of a linear regression within a window
+calculate_slope <- function(x, y) {
+  if (length(x) < 2) return(NA)
+  model <- lm(y ~ x)
+  return(coef(model)[2])  # Return the slope
+}
+
+# Calculate slopes for each rolling window
+slopes <- rollapply(
+  data$day_of_year,
+  width = window_size,
+  FUN = function(index) {
+    start_index <- index[1]
+    end_index <- start_index + window_size - 1
+    if (end_index > nrow(data)) return(NA)
+    calculate_slope(data$day_of_year[start_index:end_index], data$Value[start_index:end_index])
+  },
+  by.column = FALSE,
+  fill = NA,
+  align = "right"
+)
+
+# Add slopes to the dataframe
+data$slope <- NA
+data$slope[(window_size):(nrow(data))] <- slopes
+
+# Identify where the slope becomes positive and stays positive
+data <- data %>%
+  mutate(positive_slope = ifelse(slope > 0, 1, 0)) %>%
+  mutate(positive_streak = ave(positive_slope, cumsum(positive_slope == 0), FUN = cumsum)) %>%
+  filter(positive_streak >= window_size)
+
+# Find the first day where the slope becomes positive and stays positive
+start_of_increase <- data %>%
+  filter(positive_streak == window_size) %>%
+  slice(1)
+
+# Display the results
+print(start_of_increase)
+
+# Plot the data and mark the start of the steady increase
+ggplot(data, aes(x = day_of_year, y = Value)) +
+  geom_point() +
+  geom_line() +
+  geom_vline(xintercept = start_of_increase$day_of_year, color = "red", linetype = "dashed") +
+  labs(title = "Start of Steady Increase", x = "Day of the Year", y = "Value") +
+  theme_minimal()
+
+```
+
+
+
+
+```{r}
+
+library(purrr)
+library(slider)
+library(dplyr, warn.conflicts = FALSE)
+library(lubridate, warn.conflicts = FALSE)
+
+data <- stn_07DA001 %>% filter(waterYear == 1962)
+
+# Define the rolling window size
+window_size <- 16
+
+# Function to calculate the slope of a linear regression within a window
+calculate_slope <- function(x, y) {
+  if (length(x) < 2) return(NA)
+  model <- lm(y ~ x)
+  return(coef(model)[2])  # Return the slope
+}
+
+# Apply slide_dbl to calculate slopes using the defined function
+slopes <- slide_dbl(
+  .x = 1:nrow(data),
+  .f = ~ calculate_slope(data$day_of_year[.x], data$Value[.x]),
+  .before = window_size - 1,
+  .complete = TRUE
+)
+
+# Add slopes to the dataframe, ensuring lengths match
+data <- data %>%
+  mutate(slope = slopes)
+
+# Identify where the slope becomes positive and stays positive
+data <- data %>%
+  mutate(positive_slope = ifelse(slope > 0, 1, 0)) %>%
+  mutate(positive_streak = ave(positive_slope, cumsum(positive_slope == 0), FUN = cumsum)) %>%
+  filter(positive_streak >= window_size)
+
+# Find the first day where the slope becomes positive and stays positive
+start_of_increase <- data %>%
+  filter(positive_streak == window_size) %>%
+  slice(1)
+
+# Display the results
+print(start_of_increase)
+
+# Plot the data and mark the start of the steady increase
+ggplot(data, aes(x = day_of_year, y = Value)) +
+  geom_point() +
+  geom_line() +
+  geom_vline(xintercept = start_of_increase$day_of_year, color = "red", linetype = "dashed") +
+  labs(title = "Start of Steady Increase", x = "Day of the Year", y = "Value") +
+  theme_minimal()
 
 ```
 
 ```{r}
 ```
 
+```{r}
+```
+
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+
+```{r}
+```
 
 ```{r}
 ```
