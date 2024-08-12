@@ -1,0 +1,551 @@
+---
+##RHBN STATIONS- TECHNICAL MEETING PREPARATION
+---
+
+
+```{r}
+library(IHA)
+library(tidyverse)
+library(tidyhydat)
+library(zoo)
+library(lubridate)
+library(ggplot2)
+library(dataRetrieval)
+```
+
+
+```{r}
+#delete later on
+stn_07DA001 <- tidyhydat::hy_daily_flows(station_number = "07DA001") 
+stn_07AA001 <- tidyhydat::hy_daily_flows(station_number = "07AA001") 
+
+```
+
+#NEED TO DO: convert to runoff
+
+```{r}
+
+
+```
+
+#Data preparation 
+
+1) Get a complete set of years for 1970-2020 (by year, not water year)
+
+```{r}
+
+tidying <- function(df){
+  tidied <- df %>%
+  group_by(STATION_NUMBER) %>%
+  tidyr::complete(Date = seq.Date(as.Date("1969-08-01"), as.Date("2020-07-31"), by="day")) %>%
+  mutate(Date = as.Date(Date)) %>%
+  filter(Date >= "1969-08-01" & Date <= "2021-07-31") %>%
+    ungroup()
+  
+  counts <- tidied %>%
+   mutate(Year = year(Date)) %>%
+  filter(Year > 1969 & Year < 2020) %>%
+  group_by(STATION_NUMBER, Year) %>%
+  summarize(count = n()) %>%
+  filter(count < 365) 
+  
+ counts_yr <- tidied %>%
+   mutate(Year = year(Date)) %>%
+  filter(Year > 1969 & Year < 2020) %>%
+  select(-c(Date, Value, Symbol, Parameter)) %>%
+  distinct() %>%
+  mutate(counts = n_distinct(Year)) %>%
+  filter(counts < 50) 
+  
+  if (nrow(counts) > 0) {
+    warning("There are STATION_NUMBER, Year groups that do not have 365 or 366 values:\n",
+            paste0("STATION_NUMBER: ", counts$STATION_NUMBER, 
+                       ", waterYear: ", counts$Year, 
+                       ", Values: ", counts$count, collapse = "\n")) 
+  }else {"all stations have 365 or 366 days per calendar Year"}
+  
+ 
+ if (nrow(counts_yr) > 0) {
+    warning("There are STATION_NUMBER, Year groups that do not have 50 values:\n",
+            paste0("STATION_NUMBER: ", counts$STATION_NUMBER, 
+                       ", waterYear: ", counts$Year, 
+                       ", Values: ", counts$count, collapse = "\n")) 
+  } else {"all stations have 50 years"}
+  
+    rm(counts, counts_yr)
+
+  return(tidied)
+
+}
+
+
+df_tidied <- tidying(stn_07AA001)
+
+```
+
+
+2) Get the water year
+ and make sure there are 365-366 set of days for each WY and 50 water years  
+
+```{r}
+
+
+source("scripts/add_water_year.R")
+
+month <- 10
+df_wy <- add_water_year(df_tidied, month)
+
+
+  counts <- df_wy %>%
+  filter(waterYear > 1969 & waterYear < 2021) %>%
+  group_by(STATION_NUMBER, waterYear) %>%
+  summarize(count = n()) %>%
+  filter(count < 365) 
+  
+  
+ counts_yr <- df_wy %>%
+   mutate(Year = year(Date)) %>%
+  filter(Year > 1969 & Year < 2020) %>%
+  select(-c(Date, Value, Symbol, Parameter)) %>%
+  distinct() %>%
+  mutate(counts = n_distinct(Year)) %>%
+  filter(counts < 50) 
+  
+  if (nrow(counts) > 0) {
+    warning("There are STATION_NUMBER, Year groups that do not have 365 or 366 values:\n",
+            paste0("STATION_NUMBER: ", counts$STATION_NUMBER, 
+                       ", waterYear: ", counts$waterYear, 
+                       ", Values: ", counts$count, collapse = "\n")) 
+  } else {"all stations have 365 or 366 days per chosen Water Year"}
+ 
+ 
+ if (nrow(counts_yr) > 0) {
+    warning("There are STATION_NUMBER, Year groups that do not have 50 values:\n",
+            paste0("STATION_NUMBER: ", counts$STATION_NUMBER, 
+                       ", waterYear: ", counts$Year, 
+                       ", Values: ", counts$count, collapse = "\n")) 
+  } else {"all stations have 50 years"}
+  
+    rm(counts, counts_yr)
+
+
+```
+
+3) Get the day of the year next
+
+```{r}
+
+
+calc_day_of_wyear <- function(data){
+  
+  grouped_df <- {{data}} %>%
+    group_by(STATION_NUMBER, waterYear) %>%
+    mutate(day_of_year = row_number()) %>%
+    ungroup()
+  
+  counts <- grouped_df %>%
+    group_by(STATION_NUMBER, waterYear) %>%
+    summarize(count = n()) 
+  
+  wrong_num_groups <- counts %>% filter(count !=365 & count != 366)
+  if(nrow(wrong_num_groups) > 0){
+            warning("The following groups do not have 365 or 366 values:\n", 
+            paste0("STATION_NUMBER: ", wrong_num_groups$STATION_NUMBER, 
+                       ", waterYear: ", wrong_num_groups$waterYear, 
+                       ", Values: ", wrong_num_groups$count, collapse = "\n"))
+}  
+  rm(counts, wrong_num_groups)
+  return(grouped_df)
+
+    }
+
+
+df_doy <- calc_day_of_wyear(df_wy)
+
+
+check_max <- df_doy %>%
+  mutate(max = max(day_of_year)) %>%
+  filter(max > 366) %>%
+  distinct()
+
+if(nrow(check_max) > 0){
+            warning("There are days of the year that number more than 366, check the day of the year function")
+}  else {"The days in the year are 365 or 366 days"}
+
+rm(check_max) 
+
+df_doy <- df_doy %>% filter(!waterYear %in% c(1969, 2021))
+
+```
+
+4) Get the weeks 1:52 for each year  
+
+```{r}
+
+calc_weeks <- function(data){
+  
+  df <- {{data}} %>%
+    group_by(STATION_NUMBER, waterYear) %>%
+  dplyr::mutate(weeks = rep(1:(ceiling(n()/7)), each = 7)[1:n()]) %>%  
+  mutate(weeks = if_else(weeks == 53, 52, weeks)) %>% #make the one day week 53 be week 52. Issue is that then there are 9 days in week 52 in leap years. Could just omit feb 29th completely?
+  ungroup()
+}
+
+df_ready <- calc_weeks(df_doy)
+
+check_max <- df_ready %>%
+  mutate(max = max(weeks)) %>%
+  filter(max > 52) 
+
+if(nrow(check_max) > 0){
+            warning("There are more than 52 weeks in the year, check the week function or data")
+} else {"all years have 52 weeks in a year"}
+
+
+```
+
+#label each year annual or seasonal
+-what do we do if both conditions are false, ie if a year is not annual and not seasonal?
+
+```{r}
+
+#label each year as seasonal or annual
+
+label_annual_seas <- function(x){
+  df <- {{x}}
+  df <- df %>% 
+  group_by(STATION_NUMBER, waterYear) %>%
+  mutate(allvals = all(!is.na(Value) & Value !=0),
+  seasvals = all(!is.na(Value[day_of_year >= 90 & day_of_year <= 274]) & Value[day_of_year >= 90 & day_of_year <= 274] != 0),
+         label = case_when(allvals ~ "annual", !allvals & seasvals ~ "seasonal", TRUE ~ NA_character_))
+  
+  df_check <- df %>% filter(allvals == FALSE & seasvals == FALSE & !is.na(label))
+  
+  if (nrow(df_check) > 0){
+    warning("Strange, there are years that meet FALSE for both seasonal and annual definitions and yet have a seasonal or annual label. Maybe get rid of any years that have less than 365 days.")
+  }else {"no issues"}
+  rm(df_check)
+  
+  df_check_label <- df %>% filter(is.na(label) & !is.na(Value))
+  if (nrow(df_check_label) >0) {
+    warning("There are years that meet false for both seasonal and annual definitions. This data will be left out in some of the analyses that precede.")
+  }
+  #print(df_check_label)
+  rm(df_check_label)
+  return(df)
+  
+}
+
+df_labeled <- label_annual_seas(df_ready)
+
+
+```
+
+
+Helper functions to check for if days missing in a month or year (no Value)
+
+```{r}
+#note, missing weeks defined by if there is a day missing for grouped station_number, year, week, not for weeks overall 
+
+rem_missing_wks <- function(x, days){
+  
+  df <- {{x}}
+  
+  toremove <- df %>%
+  group_by(STATION_NUMBER, waterYear, weeks) %>%
+  select(-c(Date, Parameter, day_of_year, month)) %>%
+  mutate(week_nas = sum(is.na(Value))) %>%
+  filter(week_nas > {{days}}) %>%
+  distinct()%>%
+    ungroup()
+  
+  df_removed <- anti_join(df, toremove, by = c('STATION_NUMBER', 'waterYear', 'weeks'))
+
+  return(df_removed)
+}
+
+
+
+rem_missing_months <- function(x, days){
+  
+  df <- {{x}} %>% mutate(month = month(Date))
+  
+  toremove <- df %>%
+  group_by(STATION_NUMBER, waterYear, month) %>%
+  select(-c(Date, Parameter, day_of_year, weeks)) %>%
+  mutate(month_nas = sum(is.na(Value))) %>%
+  filter(month_nas > {{days}}) %>%
+  distinct() %>%
+    ungroup()
+  
+  df_removed <- anti_join(df, toremove, by = c('STATION_NUMBER', 'waterYear', 'month'))
+
+  return(df_removed)
+}
+
+
+#removes months with missing days and then years with missing months
+#or do we instead want to remove years based on if there are < 365 days ?
+
+rem_missing_years <- function(x, days){
+  df <- {{x}}
+  df_mnths_removed <- rem_missing_months(df, {{days}})
+  
+  toremove <- df_mnths_removed %>%
+  group_by(STATION_NUMBER, waterYear) %>%
+  summarize(month = n_distinct(month)) %>%
+  filter(month < 12) %>%
+    ungroup()
+  
+  df_removed <- anti_join(df_mnths_removed, toremove, by = c('STATION_NUMBER', 'waterYear'))
+
+  return(df_removed)
+  
+}
+
+```
+
+
+```{r}
+
+
+
+
+```
+
+
+#Annual variables 
+
+Annual and monthly mean & median
+
+```{r}
+
+#note: only do if label == 'annual'
+
+calc_mn_md_annual <- function(data){
+  input_data <- {{data}}
+  results <- input_data %>%
+    dplyr::group_by(STATION_NUMBER, waterYear) %>%
+    dplyr::summarize(annual_mean = round(mean(Value), 1), annual_median = round(median(Value),1), annual_sd = sd(Value)) %>% ungroup()
+  return(results)
+}
+
+
+calc_mn_md_month <- function(data){
+  input_data <- {{data}}
+  results <- input_data %>%
+      mutate(month = lubridate::month(Date, label = TRUE, abbr = TRUE)) %>%
+    dplyr::group_by(STATION_NUMBER, waterYear, month) %>%
+    dplyr::summarize(monthly_mean = round(mean(Value),1), monthly_median = round(median(Value), 1), monthly_std = round(sd(Value), 1)) %>%
+  pivot_wider(names_from = month, values_from = c(monthly_mean, monthly_median, monthly_std), names_prefix = "") %>% ungroup()
+    return(results)
+}
+
+yrs_all <- 1970:2020
+
+df_yrly_means_med  <- df_labeled %>% filter(label == 'annual') %>% calc_mn_md_annual() %>%
+  group_by(STATION_NUMBER) %>%  complete(waterYear = yrs_all)  %>% ungroup()
+
+df_mnthly_means_med <- df_labeled %>% filter(label == 'annual') %>% rem_missing_years(days = 3)  %>% calc_mn_md_month()%>%
+  group_by(STATION_NUMBER) %>%  complete(waterYear = yrs_all)  %>% ungroup()
+
+```
+
+
+Weekly mean & median
+
+
+```{r}
+
+calc_mn_md_week <- function(x){
+  df <- {{x}}
+  results <- df %>%
+    group_by(STATION_NUMBER, weeks) %>%
+   summarize(weekly_mean = round(mean(Value),1), weekly_median = round(median(Value), 1))
+    return(results)
+}
+
+#issue is if removing weeks, how does this effect the final outcome, and do we need to know how many weeks were removed? Does there need to be a minimum amount of weeks available to get the means/medians?
+
+df_labeled %>% rem_missing_wks(days = 1) %>% calc_mn_md_week()
+
+```
+
+
+IHA variables - annual or seasonal, as needed 
+```{r}
+
+stn_cln <- df_labeled %>%
+  mutate(Date = as.Date(Date)) %>%
+  filter(waterYear > 1970) %>%
+  filter(waterYear < 2021) %>%
+  filter(label == 'annual') #change 
+
+stns_daymonthyear <- stns_ready %>%
+  mutate(Date = format(Date,"%d-%m-%Y")) %>%
+  group_by(STATION_NUMBER) 
+
+lst_stns <- split(stns_daymonthyear, stns_daymonthyear$STATION_NUMBER )
+
+lst_stns_IHA <- lapply(lst_stns, calc_IHA)
+
+IHA <- bind_rows(lst_stns_IHA, .id = "STATION_NUMBER")
+
+View(IHA)
+
+```
+
+
+#trying to get the Median duration of Min pulses within each year
+(#min pulses)
+-date of 90 day magnitude 
+
+
+```{r}
+
+stn_cln <- df_labeled %>%
+  mutate(Date = as.Date(Date)) %>%
+  filter(waterYear > 1970) %>%
+  filter(waterYear < 2021) %>%
+  filter(label == 'annual')  
+
+stns_daymonthyear <- stn_cln %>%
+  mutate(Date = format(Date,"%d-%m-%Y"))  %>%
+      dplyr::select(Date, Value)
+
+flow_data <- zoo(stns_daymonthyear$Value, order.by = as.Date(as.character(stns_daymonthyear$Date), format = "%d-%m-%Y"))
+
+lst_stns <- split(stns_daymonthyear, stns_daymonthyear$STATION_NUMBER )
+
+lst_stns_IHA <- lapply(lst_stns,group2 )
+
+IHA <- bind_rows(lst_stns_IHA, .id = "STATION_NUMBER")
+
+
+group2(flow_data, year = "water", mimic.tnc = TRUE)
+
+group2_output <- group2(flow_data, year = "water", mimic.tnc = TRUE)
+group2_output <- group2_output[,-1]
+
+group2test(flow_data)
+
+```
+
+Annual- first b date, last b date, magnitude
+- # days open water, number days B date
+
+```{r}
+
+
+```
+
+Annual - ice effected vars
+```{r}
+
+
+```
+
+Annual - open water vars 
+```{r}
+
+
+```
+
+
+
+#extra code- remove months with > 3 missing days 
+```{r}
+
+monthly_missing_days <- df_labeled %>%
+  group_by(STATION_NUMBER, waterYear, month) %>%
+  summarise(missing_days = sum(is.na(Value))) %>%
+  ungroup()
+
+# Identify months with more than 3 missing days
+months_to_flag <- monthly_missing_days %>%
+  filter(missing_days > 3) %>%
+  select(STATION_NUMBER, waterYear, month)
+
+# Create flagged dataset
+df_flagged <- df_labeled %>%
+  semi_join(months_to_flag, by = c("STATION_NUMBER", "waterYear", "month"))
+
+# Update the original dataframe
+df_updated <- df_labeled %>%
+  anti_join(df_flagged, by = c("STATION_NUMBER", "waterYear", "month")) %>%
+  bind_rows(df_flagged %>%
+              mutate(Value = NA))
+
+# Check the updated dataframe
+print(df_updated)
+
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
+
+```{r}
+```
