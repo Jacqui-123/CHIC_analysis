@@ -13,18 +13,27 @@ library(ggplot2)
 library(dataRetrieval)
 ```
 
-
+Test stations
 ```{r}
-#delete later on
+
 stn_07DA001 <- tidyhydat::hy_daily_flows(station_number = "07DA001") 
 stn_07AA001 <- tidyhydat::hy_daily_flows(station_number = "07AA001") 
 
 ```
 
-#NEED TO DO: convert to runoff
+#Convert to runoff 
 
 ```{r}
 
+df_drainage <- tidyhydat::hy_stations(station_number = c('07AA001')) %>% 
+  select(STATION_NUMBER, DRAINAGE_AREA_GROSS)
+
+merged <- merge(stn_07AA001, df_drainage )
+
+df_runoff <- merged %>%
+  mutate(runoff = (Value/(DRAINAGE_AREA_GROSS*1000*1000)*1000*86400) ) %>%
+  select(-c(Value, DRAINAGE_AREA_GROSS )) %>%
+  dplyr::rename(Value = runoff )
 
 ```
 
@@ -46,7 +55,7 @@ tidying <- function(df){
    mutate(Year = year(Date)) %>%
   filter(Year > 1969 & Year < 2020) %>%
   group_by(STATION_NUMBER, Year) %>%
-  summarize(count = n()) %>%
+  dplyr::summarize(count = n()) %>%
   filter(count < 365) 
   
  counts_yr <- tidied %>%
@@ -79,7 +88,7 @@ tidying <- function(df){
 }
 
 
-df_tidied <- tidying(stn_07AA001)
+df_tidied <- tidying(df_runoff)
 
 ```
 
@@ -303,6 +312,7 @@ rem_missing_years <- function(x, days){
   
 }
 
+
 ```
 
 
@@ -396,10 +406,9 @@ View(IHA)
 ```
 
 
-#trying to get the Median duration of Min pulses within each year
-(#min pulses)
--date of 90 day magnitude 
+#Dates of each IHA variable
 
+(in progress)
 
 ```{r}
 
@@ -431,27 +440,144 @@ group2test(flow_data)
 
 ```
 
-Annual- first b date, last b date, magnitude
-- # days open water, number days B date
+#Median Duration of minimum and high pulses each year
+(in progress)
 
 ```{r}
 
+```
+
+#Spring Freshet Initiation Date, Magnitude
+(waiting on methods to be selected)
+
+```{r}
+
+```
+
+
+#Ice variables
+
+Annual: first b date, last b date, first b value, last b value 
+-number of days open water and ice effected
+
+```{r}
+
+b_dates <- function(df){
+
+  input_df <- {{df}} 
+  output_df_firstB <- input_df %>%
+  group_by(STATION_NUMBER, waterYear) %>%
+  arrange(STATION_NUMBER, waterYear, Date) %>%  
+  filter(Symbol == "B") %>%
+  slice(1) %>%  
+  ungroup() %>%  
+  select(STATION_NUMBER, waterYear, first_B_Date = Date, first_B_Value = Value, first_B_doy = day_of_year)
+  
+  
+  output_df_lastB <- input_df %>%
+  group_by(STATION_NUMBER, waterYear) %>%
+  arrange(STATION_NUMBER, waterYear, Date) %>%  
+  filter(Symbol == "B") %>%
+  slice_tail(n = 1) %>%  
+  ungroup() %>%  
+  select(STATION_NUMBER, waterYear, last_B_Date = Date, last_B_Value = Value, last_B_doy = day_of_year)
+  
+  output_df <- merge(output_df_firstB, output_df_lastB, on = c(STATION_NUMBER, waterYear))
+  
+  output_df <- output_df %>%
+    group_by(STATION_NUMBER, waterYear) %>%
+    mutate(duration_ice = last_B_doy - first_B_doy) %>%
+    mutate(duration_ow = 365-duration_ice )
+  return(output_df)
+  
+}
+
+
+#filter annual 
+bdates <- b_dates(df_labeled)
+
+
+```
+
+Separate into ice effected and open water datasets
+```{r}
+
+bdates_merged <- merge(df_labeled, bdates, by = c('STATION_NUMBER', 'waterYear'))
+
+ice_effected <- bdates_merged %>%
+  group_by(STATION_NUMBER, waterYear) %>%
+  filter(Date > first_B_Date & Date < last_B_Date) 
+ 
+open_water <- bdates_merged %>%
+  group_by(STATION_NUMBER, waterYear) %>%
+  filter(Date > first_B_Date & Date < last_B_Date)
 
 ```
 
 Annual - ice effected vars
-```{r}
+(unless 3 days or less missing in a row? double check. IHA doesn't allow NAs)
+```{r, warning=FALSE}
+
+#make sure no missing data in Values column
+
+stns_daymonthyear <- ice_effected %>%
+  mutate(Date = as.Date(Date)) %>%
+  filter(waterYear > 1975) %>%
+  filter(waterYear < 2021) %>%
+  mutate(Date = format(Date,"%d-%m-%Y"))
+
+lst_stns <- split(stns_daymonthyear, stns_daymonthyear$STATION_NUMBER )
+
+lst_stns_IHA <- lapply(lst_stns, calc_IHA)
+
+IHA <- bind_rows(lst_stns_IHA, .id = "STATION_NUMBER")
+
+View(IHA)
 
 
+#rm(IHA, stns_daymonthyear, lst_stns, lst_stns_IHA)
 ```
 
 Annual - open water vars 
+(unless 3 days or less missing in a row and 10% or less missing? double check - IHA won't allow calculations with any NAs)
+
 ```{r}
 
+#make sure no missing data in Values column
+
+stns_daymonthyear <- open_water %>%
+  mutate(Date = as.Date(Date)) %>%
+  filter(waterYear > 1975) %>%
+  filter(waterYear < 2021) %>%
+  mutate(Date = format(Date,"%d-%m-%Y"))
+
+lst_stns <- split(stns_daymonthyear, stns_daymonthyear$STATION_NUMBER )
+
+lst_stns_IHA <- lapply(lst_stns, calc_IHA)
+
+IHA <- bind_rows(lst_stns_IHA, .id = "STATION_NUMBER")
+
+View(IHA)
 
 ```
 
+```{r}
 
+7D Magnitude at time of Fall Freezeup		Calculate 7D mean following first B
+7D Magnitude at time of Spring Breakup		Calculate 7D mean prior to Last B
+
+```
+
+#Mann Kendall
+```{r}
+
+calc_MK(ice_effected, Value, 1975)
+    
+
+```
+
+```{r}
+```
 
 #extra code- remove months with > 3 missing days 
 ```{r}
