@@ -19,6 +19,8 @@ Test stations
 stn_07DA001 <- tidyhydat::hy_daily_flows(station_number = "07DA001") 
 stn_07AA001 <- tidyhydat::hy_daily_flows(station_number = "07AA001") 
 
+hy_stations(station_number = "07DA001")
+
 ```
 
 #Convert to runoff 
@@ -28,12 +30,12 @@ stn_07AA001 <- tidyhydat::hy_daily_flows(station_number = "07AA001")
 df_drainage <- tidyhydat::hy_stations(station_number = c('07AA001')) %>% 
   select(STATION_NUMBER, DRAINAGE_AREA_GROSS)
 
-merged <- merge(stn_07AA001, df_drainage )
+merged <- merge(stn_07AA001, df_drainage)
 
 df_runoff <- merged %>%
   mutate(runoff = (Value/(DRAINAGE_AREA_GROSS*1000*1000)*1000*86400) ) %>%
-  select(-c(Value, DRAINAGE_AREA_GROSS )) %>%
-  dplyr::rename(Value = runoff )
+  select(-c(Value, DRAINAGE_AREA_GROSS)) %>%
+  dplyr::rename(Value = runoff) 
 
 ```
 
@@ -210,7 +212,6 @@ if(nrow(check_max) > 0){
             warning("There are more than 52 weeks in the year, check the week function or data")
 } else {"all years have 52 weeks in a year"}
 
-
 ```
 
 #label each year annual or seasonal
@@ -245,11 +246,15 @@ label_annual_seas <- function(x){
   
 }
 
+df_labeled <- df_labeled %>% filter(waterYear < 2021 & waterYear > 1969)
+
 df_labeled <- label_annual_seas(df_ready)
 
-
+#we don't need this. What we are doing is now we are calculating annual and seasonal stations for everything possible, based on the conditions 
+#don't delete, save for later. 
+#8 vs 7 blocks o' legos 
+  
 ```
-
 
 Helper functions to check for if days missing in a month or year (no Value)
 
@@ -357,13 +362,12 @@ df_yrly_means_med  <- df_labeled %>% filter(label == 'annual') %>% calc_mn_md_an
   group_by(STATION_NUMBER) %>%  complete(waterYear = yrs_all)  %>% ungroup()
 
 df_mnthly_means_med <- df_labeled %>% filter(label == 'annual') %>% rem_missing_years(days = 3)  %>% calc_mn_md_month()%>%
-  group_by(STATION_NUMBER) %>%  complete(waterYear = yrs_all)  %>% ungroup()
+  group_by(STATION_NUMBER) %>% complete(waterYear = yrs_all)  %>% ungroup()
 
 ```
 
 
-Weekly mean & median
-
+Weekly mean & median 
 
 ```{r}
 
@@ -376,6 +380,7 @@ calc_mn_md_week <- function(x){
 }
 
 #issue is if removing weeks, how does this effect the final outcome, and do we need to know how many weeks were removed? Does there need to be a minimum amount of weeks available to get the means/medians?
+#note: if one day or less missing a week, not a month 
 
 df_labeled %>% rem_missing_wks(days = 1) %>% calc_mn_md_week()
 
@@ -391,7 +396,7 @@ stn_cln <- df_labeled %>%
   filter(waterYear < 2021) %>%
   filter(label == 'annual') #change 
 
-stns_daymonthyear <- stns_ready %>%
+stns_daymonthyear <- stn_cln %>%
   mutate(Date = format(Date,"%d-%m-%Y")) %>%
   group_by(STATION_NUMBER) 
 
@@ -440,8 +445,7 @@ group2test(flow_data)
 
 ```
 
-#Median Duration of minimum and high pulses each year
-(in progress)
+
 
 ```{r}
 
@@ -487,7 +491,7 @@ b_dates <- function(df){
   output_df <- output_df %>%
     group_by(STATION_NUMBER, waterYear) %>%
     mutate(duration_ice = last_B_doy - first_B_doy) %>%
-    mutate(duration_ow = 365-duration_ice )
+    mutate(duration_ow = 365 - duration_ice)
   return(output_df)
   
 }
@@ -496,7 +500,7 @@ b_dates <- function(df){
 #filter annual 
 bdates <- b_dates(df_labeled)
 
-
+View(bdates)
 ```
 
 Separate into ice effected and open water datasets
@@ -568,15 +572,30 @@ View(IHA)
 
 ```
 
-#Mann Kendall
+#days of total ice effected data
 ```{r}
 
-calc_MK(ice_effected, Value, 1975)
-    
+df_labeled %>%
+  last date - first date +1 #total days ice effected data 
+
+```
+
+#Mann Kendall
+
+Edit to use Zhang and Yue-Pilon methods in zyp package and then Kendall in Kendall package
+```{r}
+
+x <- IHA %>%
+  select(STATION_NUMBER, Year, August)
+
+calc_MK(x, August, 1975)
+
+hy_stations(station_number = "07AA001")
 
 ```
 
 ```{r}
+
 ```
 
 #extra code- remove months with > 3 missing days 
