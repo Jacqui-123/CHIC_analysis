@@ -2,7 +2,7 @@
 ##RHBN CHIC Analysis
 ---
 
-The functions and suggested workflow to tidy WSC data and analyze CHIC variables. 
+The functions and suggested workflow to tidy WSC data and analyze CHIC variables for the RHBN analysis. 
 
 Developed by Jacqui Levy, Sept 2024. 
 
@@ -759,6 +759,8 @@ result_MK_IHA <- cbind(Reversals, One_Day_Min, One_Day_Max, Seven_Day_Min, Seven
 
 
 ```
+
+
 ```{r}
 
 ```
@@ -766,106 +768,3 @@ result_MK_IHA <- cbind(Reversals, One_Day_Min, One_Day_Max, Seven_Day_Min, Seven
 ```{r}
 
 ```
-
-#extra code
-
-remove months with > 3 missing days 
-```{r}
-
-monthly_missing_days <- df_labeled %>%
-  group_by(STATION_NUMBER, waterYear, month) %>%
-  summarise(missing_days = sum(is.na(Value))) %>%
-  ungroup()
-
-# Identify months with more than 3 missing days
-months_to_flag <- monthly_missing_days %>%
-  filter(missing_days > 3) %>%
-  select(STATION_NUMBER, waterYear, month)
-
-# Create flagged dataset
-df_flagged <- df_labeled %>%
-  semi_join(months_to_flag, by = c("STATION_NUMBER", "waterYear", "month"))
-
-# Update the original dataframe
-df_updated <- df_labeled %>%
-  anti_join(df_flagged, by = c("STATION_NUMBER", "waterYear", "month")) %>%
-  bind_rows(df_flagged %>%
-              mutate(Value = NA))
-
-# Check the updated dataframe
-print(df_updated)
-
-```
-
-
-#label each year annual or seasonal
--what do we do if both conditions are false, ie if a year is not annual and not seasonal?
-
-```{r}
-#label each year as seasonal or annual
-
-label_annual_seas <- function(x){
-  df <- {{x}}
-  df <- df %>% 
-  group_by(STATION_NUMBER, waterYear) %>%
-  mutate(allvals = all(!is.na(Value) & Value !=0),
-  seasvals = all(!is.na(Value[day_of_year >= 90 & day_of_year <= 274]) & Value[day_of_year >= 90 & day_of_year <= 274] != 0),
-         label = case_when(allvals ~ "annual", !allvals & seasvals ~ "seasonal", TRUE ~ NA_character_))
-  
-  df_check <- df %>% filter(allvals == FALSE & seasvals == FALSE & !is.na(label))
-  
-  if (nrow(df_check) > 0){
-    warning("Strange, there are years that meet FALSE for both seasonal and annual definitions and yet have a seasonal or annual label. Maybe get rid of any years that have less than 365 days.")
-  }else {"no issues"}
-  rm(df_check)
-  
-  df_check_label <- df %>% filter(is.na(label) & !is.na(Value))
-  if (nrow(df_check_label) >0) {
-    warning("There are years that meet false for both seasonal and annual definitions. This data will be left out in some of the analyses that precede.")
-  }
-  #print(df_check_label)
-  rm(df_check_label)
-  return(df)
-  
-}
-
-df_labeled <- df_labeled %>% filter(waterYear < 2021 & waterYear > 1969)
-
-df_labeled <- label_annual_seas(df_ready)
-
-#we don't need this. What we are doing is now we are calculating annual and seasonal stations for everything possible, based on the conditions 
-#don't delete, save for later. 
-
-  
-```
-
-
-```{r}
-
-
-result <- lapply(unique(runoff_10$waterYear), function(i) {
-  df_subset <- runoff_10[runoff_10$waterYear == i,]
-  perc_cumsum <- df_subset[which.min(abs(df_subset$runoff_10-df_subset$cuml_sum)),] 
-  perc_cumsum <- data.frame(perc_cumsum)
-})
-
-freshet <- do.call(rbind, result)
-```
-
-```{r}
-```
-
-```{r}
-```
-
-```{r}
-```
-
-
-```{r}
-```
-
-```{r}
-```
-
-

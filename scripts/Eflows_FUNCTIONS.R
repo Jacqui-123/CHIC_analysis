@@ -325,7 +325,7 @@ library(dataRetrieval)
       col_var <- df_subset %>% pull({{parameter}})
       #df subset to a ts object and run MK analysis
       TS <- ts(col_var, frequency = 1, start = c({{start}}, 1))
-      MK <- MannKendall(TS)
+      MK <- Kendall::MannKendall(TS)
       #append pvalue to a list
       pval <- as.numeric(MK$sl)
       plst[[i]] <- pval

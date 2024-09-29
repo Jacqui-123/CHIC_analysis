@@ -27,6 +27,7 @@ library(dendextend) #for comparing two dendrograms
 
 ```
 
+
 ```{r}
 
 
@@ -74,6 +75,7 @@ stns <- stns %>%
   mutate(STATION_NUMBER = toupper(STATION_NUMBER)) %>%
   distinct(STATION_NUMBER, .keep_all = TRUE) %>%
   arrange()
+
 
 ```
 
@@ -129,7 +131,52 @@ rm(eastern_temp_forests, great_plains, hudson_plains, w_coast_forests, no_ecoreg
 stn_flow_disch <- left_join(stn_all, stn_all_drainage, by = "STATION_NUMBER")  %>% select(-c(ends_with(".x")))
 
 
+
 ```
+
+#crs for inverse distance approach to estimate B dates
+
+```{r}
+
+library(sf)
+stn_all_lat_long <- stn_all_drainage %>% select(LATITUDE, LONGITUDE, STATION_NUMBER)
+
+st <- st_as_sf(stn_all_lat_long, coords = c("LATITUDE", "LONGITUDE"), crs = 4269) #4326
+
+st_tr_3979  <- st_transform(st, crs = 3979)
+st_tr_3978 <- st_transform(st, crs = 3978)
+st_tr_3347 <- st_transform(st, crs = 3347)
+st_tr_9822 <- st_transform(st, crs = 9822)
+
+
+
+st_4326_transformed <- st %>% mutate(x = unlist(map(st$geometry,1)),
+                      y = unlist(map(st$geometry, 2))) %>% st_drop_geometry()
+
+  
+st_tr_3979 <- st_tr_3979 %>% mutate(x_3979 = unlist(map(st_tr_3979$geometry,1)),
+                      y_3979 = unlist(map(st_tr_3979$geometry, 2))) %>% st_drop_geometry()
+
+
+st_tr_3978 <- st_tr_3978 %>% mutate(x_3978 = unlist(map(st_tr_3978$geometry,1)),
+                      y_3978 = unlist(map(st_tr_3978$geometry, 2))) %>% st_drop_geometry()
+
+st_tr_3347 <- st_tr_3347 %>% mutate(x_3347 = unlist(map(st_tr_3347$geometry,1)),
+                      y_3347 = unlist(map(st_tr_3347$geometry, 2))) %>% st_drop_geometry()
+
+st_tr_9822 <- st_tr_9822 %>% mutate(x_9822 = unlist(map(st_tr_9822$geometry,1)),
+                      y_9822 = unlist(map(st_tr_9822$geometry, 2))) %>% st_drop_geometry()
+
+df_crs_comb <- cbind.data.frame(stn_all_lat_long, st_4326_transformed, st_tr_3979, st_tr_3978, st_tr_3347, st_tr_9822) 
+
+df_crs_comb <- df_crs_comb[!duplicated(colnames(df_crs_comb))]
+
+#write.csv(df_crs_comb,  "EPSG_transformations.csv")
+  View(df_crs_comb)
+  
+
+```
+
 
 ```{r}
 

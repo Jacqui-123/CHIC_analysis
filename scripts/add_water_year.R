@@ -1,3 +1,12 @@
+
+#NOTE:
+#This function has code from the addWaterYear function from the dataRetrieval library in R
+#code was copied from https://rdrr.io/cran/dataRetrieval/src/R/addWaterYear.R
+#and altered to allow a user to input the month that they want the water year to begin
+#if you don't need to select an alternative month for the water year to begin
+#and it can start in october, then you can apply addWaterYear from the dataRetrieval library,
+#or else just use: add_water_year(data, month = 10)
+
 add_water_year <- function(rawData, month) {
   allowedDateColNames <- c("dateTime", "Date", "ActivityStartDate", "ActivityEndDate")
   allowedWYColNames <- c("waterYear", "waterYear", "ActivityStartWaterYear", "ActivityEndWaterYear")

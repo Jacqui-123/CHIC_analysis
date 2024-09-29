@@ -1,0 +1,682 @@
+---
+
+How to tidy and calculate IHA variables using data from the Water survey of Canada 
+
+Methods developed by Jacqui Levy for ECCC, September 2024
+
+This is an Rmarkdown notebook. Run each code chunk using the green arrow and the outputs will appear below. You can also run it line by line by highlighting each line of code and clicking ctrl+enter 
+
+Data needs to be in the same format with the same column headers that tidyhydat uses: STATION_NUMBER, Date (y-m-d), Value. 
+
+source functions located in: Eflows_WSC_functions.R and add_water_year.R
+---
+
+
+```{r}
+
+source('scripts/Eflows_WSC_functions.R')
+
+library(IHA)
+library(tidyverse)
+library(tidyhydat)
+library(zoo)
+library(lubridate)
+library(ggplot2)
+library(dataRetrieval)
+
+
+```
+
+#Stations from HYDAT
+
+```{r}
+#run this once to download the HYDAT database
+#download_hydat()
+
+#get single station from hydat 
+stn_07DA001 <- tidyhydat::hy_daily_flows(station_number = "07DA001") 
+
+#get two or more stations from hydat using c(), this works in any tidyhydat library function
+stns <- tidyhydat::hy_daily_flows(station_number = c("07DA001", "07DD002"))
+
+#hy_stations() for a summary of any station id with lat-long and drainage area
+hy_stations(station_number = "07DA001")
+
+#to get the year from and year to and types of data available for any station (flow, level, etc)
+hy_stn_data_coll(station_number = "07DA001")
+
+#can use with tidyverse to see only flow data etc, for example;
+hy_stn_data_coll(station_number = "07DA001") %>% filter(DATA_TYPE == "Flow")
+
+```
+
+#Convert to runoff 
+This is optional, skip if not needed
+
+```{r}
+
+#get drainage from hy_stations()
+df_drainage <- tidyhydat::hy_stations(station_number = c("07DA001", "07DD002")) %>% 
+  select(STATION_NUMBER, DRAINAGE_AREA_GROSS)
+
+#merge station summary and flow data 
+merged <- merge(stns, df_drainage)
+
+df_runoff <- merged %>%
+  mutate(runoff = (Value/(DRAINAGE_AREA_GROSS*1000*1000)*1000*86400) ) %>%
+  select(-c(Value, DRAINAGE_AREA_GROSS)) %>%
+  dplyr::rename(Value = runoff) #renames Value to runoff so it's easier in calculations later on
+
+rm(merged)
+```
+
+#Data preparation 
+
+1) Get a complete set of years for 1970-2020, for example
+(by year, not water year)
+
+complete() is used to make sure there is a complete set of days for each year. In HYDAT if there is no data there is not a record for that day. It's useful to have a complete set of days for each year to be able to tell later on how many days or years are missing. Other functions in this workbook rely on having a complete set of years, even for seasonal data, so don't skip this step - it's better to expand all years and then delete months to get seasonal data later on. Examples of using seasonal data are later on.
+
+-note that when complete is used with seq.Date, it will account for and add leap years
+
+```{r}
+
+#function to filter and get a complete set of years between selected dates. Change the dates and run the function again to save it in the environment with the desired dates.
+
+tidying <- function(df){
+  tidied <- df %>%
+  group_by(STATION_NUMBER) %>%
+  tidyr::complete(Date = seq.Date(as.Date("1969-08-01"), as.Date("2020-07-31"), by="day")) %>%
+  mutate(Date = as.Date(Date)) %>%
+  filter(Date >= "1969-08-01" & Date <= "2021-07-31") %>%
+    ungroup()
+  
+  counts <- tidied %>%
+   mutate(Year = year(Date)) %>%
+  filter(Year > 1969 & Year < 2020) %>%
+  group_by(STATION_NUMBER, Year) %>%
+  dplyr::summarize(count = n()) %>%
+  filter(count < 365) 
+  
+ counts_yr <- tidied %>%
+   mutate(Year = year(Date)) %>%
+  filter(Year > 1969 & Year < 2020) %>%
+  select(-c(Date, Value, Symbol, Parameter)) %>%
+  distinct() %>%
+  mutate(counts = n_distinct(Year)) %>%
+  filter(counts < 50) 
+  
+  if (nrow(counts) > 0) {
+    warning("There are STATION_NUMBER, Year groups that do not have 365 or 366 values:\n",
+            paste0("STATION_NUMBER: ", counts$STATION_NUMBER, 
+                       ", waterYear: ", counts$Year, 
+                       ", Values: ", counts$count, collapse = "\n")) 
+  }else {"all stations have 365 or 366 days per calendar Year"}
+  
+ 
+ if (nrow(counts_yr) > 0) {
+    warning("There are STATION_NUMBER, Year groups that do not have 50 values:\n",
+            paste0("STATION_NUMBER: ", counts$STATION_NUMBER, 
+                       ", waterYear: ", counts$Year, 
+                       ", Values: ", counts$count, collapse = "\n")) 
+  } else {"all stations have 50 years"}
+  
+    rm(counts, counts_yr)
+
+  return(tidied)
+
+}
+
+
+#use the function above to tidy data and get a complete set of days for each year. If there are errors or warnings then remove those years or widen the filter(Year > x & Year < x) 
+
+#applying tidying function
+df_tidied <- tidying(df_runoff) #change the dataframe input object if runoff step was skipped
+rm(df_runoff)
+
+```
+
+
+2) Get the water year
+And make sure there are 365-366 set of days for each WY and 50 water years  (or however many years are desired for your analysis)
+
+```{r}
+
+
+source("scripts/add_water_year.R") #this function is longer so it's in a separate script
+
+#apply add_water_year, choose a month in numerical form for the water year to begin
+df_wy <- add_water_year(df_tidied, 10)
+
+#checks to make sure the water year has 365 days
+  counts <- df_wy %>%
+  group_by(STATION_NUMBER, waterYear) %>%
+  summarize(count = n()) %>%
+  filter(count < 365) 
+  
+  
+ counts_yr <- df_wy %>%
+   mutate(Year = year(Date)) %>%
+  select(-c(Date, Value, Symbol, Parameter)) %>%
+  distinct() %>%
+  mutate(counts = n_distinct(Year)) %>%
+  filter(counts < 50) 
+  
+  if (nrow(counts) > 0) {
+    warning("There are STATION_NUMBER, Year groups that do not have 365 or 366 values:\n",
+            paste0("STATION_NUMBER: ", counts$STATION_NUMBER, 
+                       ", waterYear: ", counts$waterYear, 
+                       ", Values: ", counts$count, collapse = "\n")) 
+  } else {"all stations have 365 or 366 days per chosen Water Year"}
+ 
+ 
+ if (nrow(counts_yr) > 0) {
+    warning("There are STATION_NUMBER, Year groups that do not have 50 values:\n",
+            paste0("STATION_NUMBER: ", counts$STATION_NUMBER, 
+                       ", waterYear: ", counts$Year, 
+                       ", Values: ", counts$count, collapse = "\n")) 
+  } else {"all stations have 50 years"}
+  
+    rm(counts, counts_yr)
+
+
+#if there are warnings, then filter out those years and re-run code above
+
+#for example:
+df_wy <- df_wy %>%
+filter(!waterYear %in% c(1969, 2021))
+  
+```
+
+3) Get the day of the year next, ie a sequence of 1-365 or 366 for each group of STATION_NUMBER, waterYear
+
+```{r}
+
+
+df_doy <- calc_day_of_wyear(df_wy)
+
+#if there are errors filter out offending years:
+df_doy <- df_doy %>% filter(!waterYear %in% c(1969, 2021))
+
+#making sure that the function worked as intended (sometimes it will number the total rows in the dataframe rather than only by year, this just checks to make sure it's not doing that.)
+check_max <- df_doy %>%
+  mutate(max = max(day_of_year)) %>%
+  filter(max > 366) %>%
+  distinct()
+
+if(nrow(check_max) > 0){
+            warning("There are days of the year that number more than 366, check the day of the year function")
+}  else {"The days in the year are 365 or 366 days"}
+
+rm(check_max) 
+
+
+```
+
+4) Get a column with the weeks 1:52 for each year  
+
+```{r}
+
+df_ready <- calc_weeks(df_doy)
+
+#checks
+check_max <- df_ready %>%
+  mutate(max = max(weeks)) %>%
+  filter(max > 52) 
+
+if(nrow(check_max) > 0){
+            warning("There are more than 52 weeks in the year, check the week function or data")
+} else {"all years have 52 weeks in a year"}
+
+```
+
+#Address missing data
+
+There are a series of helper functions located in "Eflows_IHA_functions.R" that delete weeks, months, or years with a certain amount of missing data (ie "NA" for Value)
+
+```{r}
+
+#Example usage:
+rem_missing_months(data, days = 3) #removes months with 3 or more days of missing data (not contiguous)
+rem_missing_wks(data, days = 4) #removes weeks with 4 or more days of missing data (not contiguous)
+rem_missing_years(data, days = 3) #removes months with missing days >3 and then removes years with any number of missing months. 
+
+```
+
+The function one that has been used for eflows analyses thus far is the calc_rle function (rle = "run length encoding"), which calculates how many days in a row there are of missing data, and then deletes years with >14 days of NAs in a row. This is different than the functions above which just look at overall missing data, it doesn't have to be contiguous 
+
+
+```{r}
+
+#example usage for one station
+calc_rle(data, days = 14)
+
+```
+
+calc_rle for multiple stations
+
+```{r}
+
+#example with multiple stations, for seasonal data:
+df_seas <- df_ready %>%
+  filter(month(Date) %in% c(3,4,5,6,7,8,9,10)) #to get seasonal data only. delete if want year-round data 
+
+#split-apply-combine method to apply the missing year function to all station numbers and years in the dataframe
+lst_stns <- split(df_seas, df_seas$STATION_NUMBER)
+lst_stns <- lapply(lst_stns, function(x) calc_rle(x, days = 14)) #can replace with any function here
+del_yr_nas <- bind_rows(lst_stns, .id = "STATION_NUMBER")
+
+
+#make sure that there are oct-march for all stn, wyears. change filter(num_months < 8) to filter(num_months < 12) for annual data
+check_mnths <- del_yr_nas %>% 
+    mutate(month = month(Date)) %>%
+  group_by(STATION_NUMBER, waterYear) %>%
+  select(STATION_NUMBER, waterYear, month) %>%
+  distinct() %>%
+  summarise(num_months = n()) %>%
+  filter(num_months < 8) %>% ungroup()
+
+check_days <- del_yr_nas %>%
+  mutate(month = month(Date)) %>%
+  group_by(STATION_NUMBER, waterYear, month) %>%
+  summarise(num_days =  n()) %>%
+  filter(num_days < 30) 
+
+
+  if (nrow(check_mnths) > 0) {
+    warning("There are STATION_NUMBER, Year groups that have less than 8 months: \n",
+            paste0("STATION_NUMBER: ", check_mnths$STATION_NUMBER, 
+                       ", waterYear: ", check_mnths$Year, 
+                        collapse = "\n")) 
+  } else {"all stations have 8 months per water year"}
+
+
+  if (nrow(check_days) > 0) {
+    warning("There are STATION_NUMBER, Year groups that have less than 30 days in a month: \n",
+            paste0("STATION_NUMBER: ", check_mnths$STATION_NUMBER, 
+                       ", waterYear: ", check_mnths$Year, 
+                        collapse = "\n")) 
+  } else {"all stations have at least 30 days per month for each water year"}
+
+
+```
+
+#IHA variables 
+
+-note that calc_IHA is currently set to water year, you can change year = "calendar" in the 'Eflows_IHA_functions.R' functions script.
+
+-The IHA functions only work on a standard calendar year or a water year of Oct-Sept, you can't change the start month for the water year for the IHA calculations. Instead see the Annual variables section below to calculate annual variables if the water year starts in a different month than Oct. 
+
+-The data input for the IHA functions must be in day-month-year, and there should not be NAs
+
+```{r}
+
+#change date format to day-month-year as is required for IHA functions 
+stns_daymonthyear <- df_ready %>%
+  mutate(Date = format(Date,"%d-%m-%Y")) %>%
+  group_by(STATION_NUMBER) %>%
+  fill(Value, .direction = 'downup') #fill missing values going down then up (ie if at start of df) 
+
+
+#you may not need to run fill() if you used one of the functions to remove months/years etc, but often the IHA functions will throw an error if there are any missing days so it's good to have just in case. Just beware of running fill() if you have a lot of missing data, as this will just fill in all days, linearly/indiscriminately, no matter how many days of missing data there are. Ie if there are 100 days of missing data it will interpolate or fill all 100 of those days from the last known value. It's suggested to run one of the missing data functions to remove data with too many missing values before interpolating using fill()
+
+```
+
+Calculate IHA variables by station number and combine into a single dataframe:
+```{r}
+
+#split-apply-combine process to split by station number and apply the IHA functions across all station numbers and water years. 
+
+lst_stns <- split(stns_daymonthyear, stns_daymonthyear$STATION_NUMBER )
+
+#apply calc_IHA function to all dfs in the list
+lst_stns_IHA <- lapply(lst_stns, calc_IHA)
+
+#Combine all IHA outputs into one df (unnlist the dfs)
+IHA <- bind_rows(lst_stns_IHA, .id = "STATION_NUMBER")
+View(IHA)
+
+
+```
+
+
+#Annual variables 
+
+Annual and monthly mean & median
+-note that these work with the water year starting in any month, as long as you have a "waterYear" column (use "add_water_year(data, month = x)" to get a water year that starts in the desired month) 
+
+```{r}
+
+#for one station at a time:
+
+#mean and median and std by month
+calc_mn_md_month(df_ready)
+
+#mean and median and std per year
+calc_mn_md_annual(df_ready)
+
+#mean and median and std by week
+calc_mn_md_week(df_ready)
+
+#annual mean and median for seasonal data
+calc_mn_md_seasonal(df_ready)
+
+```
+
+
+```{r}
+#for two or more stations at a time:
+
+lst_stns <- split(df_ready, df_ready$STATION_NUMBER )
+
+#apply desired function to all dfs in the list
+lst_stns_IHA <- lapply(lst_stns, calc_mn_md_week) ##replace function here
+
+#Combine all outputs into one df (unnlist the dfs)
+output <- bind_rows(lst_stns_IHA, .id = "STATION_NUMBER")
+View(output)
+
+```
+
+#Center of Mass 
+
+With magnitude and date
+
+-Sum up the runoff for the year from March 1, then find the median, and then find the date at which the median occurs. (water resource engineering variable used in CHIC approach)
+
+
+```{r}
+
+#calculate the center of mass, when it just passes the 50th percentile
+
+#can do this for both seasonal and annual data sets
+
+center_of_mass <- function(data){
+  
+  df <- data %>%
+  group_by(STATION_NUMBER, waterYear) %>%
+  mutate(sum_runoff = sum(Value)) %>%
+  mutate(runoff_50  = sum_runoff*.5) %>%
+  mutate(cuml_sum = cumsum(Value)) 
+  
+  result <- df %>%group_by(STATION_NUMBER, waterYear) %>%
+
+
+  do({
+    df_subset <- .
+    perc_cumsum <- df_subset[which.min(abs(df_subset$runoff_50-df_subset$cuml_sum)),] 
+    perc_cumsum <- df_subset[which(df_subset$cuml_sum > df_subset$runoff_50)[1], ]
+
+    perc_cumsum <- data.frame(perc_cumsum)
+  })
+  return(result)
+}
+
+ center_mass_df <- center_of_mass(df_ready)
+
+
+```
+
+#Freshet
+
+There are a few options for freshet: the Burns method or the percentiles method. 
+
+Percentile method: get the total open water runoff, and freshet is when the daily running total for runoff reaches 10% of the total runoff. This number can be adjusted in the function below.
+
+1) get percentile of runoff from March 1 - Oct 31
+
+```{r}
+source('scripts/Eflows_WSC_functions.R')
+
+#make sure the data used is seasonal data, and that missing values have been appropriately dealt with:
+
+df_seas <- df_ready %>%
+  filter(month(Date) %in% c(3,4,5,6,7,8,9,10)) #to get seasonal data only. delete if want year-round data 
+
+freshet <- freshet_percentile(df_seas)
+
+freshet
+
+```
+Burns method:
+
+```{r}
+
+#data used can be annual or seasonal data:
+Group_3_freshet(df_ready)
+
+```
+
+#Ice variables
+
+Freeze date, freeze day of the year, and thaw date and thaw day of the year
+-Group 1 and 2 functions use the longest consecutive runs of B dates, vs b_dates(), which just gets the raw values for the first and last B date.
+
+
+```{r}
+
+#This function calculates the freeze and thaw dates and their flow values, using the longest consecutive run of "B" Symbols
+Group_1_ice_cover(df_ready)
+
+
+#Function calculates the longest stretch of continuous ice coverage (Bs), per water year
+Group_2_freeze_thaw(df_ready)
+```
+
+
+B dates - can use this as an alternative
+
+This extracts the first b date, last b date, first b value, last b value, and the duration of the open water and ice effected seasons. Make sure there is a full, year-round dataset with minimal missing data. This just looks at the first and last B date, and disregards days where there may not be Bs 
+
+```{r}
+
+bdates <- b_dates(df_ready)
+
+bdates
+
+```
+
+Separate into ice effected and open water datasets
+```{r}
+
+bdates_merged <- merge(df_ready, bdates, by = c('STATION_NUMBER', 'waterYear'))
+
+ice_effected <- bdates_merged %>%
+  group_by(STATION_NUMBER, waterYear) %>%
+  filter(Date > first_B_Date & Date < last_B_Date) 
+ 
+open_water <- bdates_merged %>%
+  group_by(STATION_NUMBER, waterYear) %>%
+  filter(Date > first_B_Date & Date < last_B_Date)
+
+```
+
+#IHA: Ice
+
+For ice effected data:
+
+```{r, warning=FALSE}
+
+#make sure no missing data in Values column
+#adjust years as needed for your dataset
+
+stns_daymonthyear <- ice_effected %>%
+  mutate(Date = as.Date(Date)) %>%
+  filter(waterYear > 1975) %>%
+  filter(waterYear < 2021) %>%
+  mutate(Date = format(Date,"%d-%m-%Y"))
+
+lst_stns <- split(stns_daymonthyear, stns_daymonthyear$STATION_NUMBER )
+
+lst_stns_IHA <- lapply(lst_stns, calc_IHA)
+
+IHA <- bind_rows(lst_stns_IHA, .id = "STATION_NUMBER")
+
+View(IHA)
+
+
+#rm(IHA, stns_daymonthyear, lst_stns, lst_stns_IHA)
+```
+
+IHA for open water data:
+
+```{r}
+
+#make sure no missing data in Values column
+#adjust years as needed for your dataset
+
+stns_daymonthyear <- open_water %>%
+  mutate(Date = as.Date(Date)) %>%
+  filter(waterYear > 1975) %>%
+  filter(waterYear < 2021) %>%
+  mutate(Date = format(Date,"%d-%m-%Y"))
+
+lst_stns <- split(stns_daymonthyear, stns_daymonthyear$STATION_NUMBER )
+
+lst_stns_IHA <- lapply(lst_stns, calc_IHA)
+
+IHA <- bind_rows(lst_stns_IHA, .id = "STATION_NUMBER")
+
+View(IHA)
+
+```
+
+
+#Mann Kendall Trend Analysis
+
+Data preparation:
+```{r}
+
+#First expand dataframe to make sure there are all years present for all stations, even if there is no data- the Mann-Kendall function does not allow 
+
+for (i in unique(IHA$STATION_NUMBER)) {
+  min_yr <- min(IHA$Year)
+  max_yr <- max(IHA$Year)
+  IHA_expand <- IHA %>%
+    mutate(Year = as.integer(Year)) %>%
+    tidyr::complete(STATION_NUMBER, Year = min_yr:max_yr)
+  return(IHA_expand)
+}
+
+#change any columns that begin with a number or have spaces, as the Mann-Kendall test doesn't like leading numbers or spaces in column headers
+IHA_expand <- IHA_expand %>%
+rename("One_Day_Max" = "1 Day Max",
+           "One_Day_Min" = '1 Day Min',
+           "Three_Day_Max" = "3 Day Max",
+           "Three_Day_Min" = "3 Day Min",
+           "Seven_Day_Min" ="7 Day Min",
+          "Seven_Day_Max" = "7 Day Max",
+          "Thirty_Day_Max" = "30 Day Max",
+          "Thirty_Day_Min" = "30 Day Min",
+          "Ninety_Day_Max" = "90 Day Max",
+          "Ninety_Day_Min" = "90 Day Min",
+          "High_pulse_number" = "High pulse number",
+          "Low_pulse_number" = "Low pulse number",
+          "High_pulse_length" = "High pulse length",
+          "Low_pulse_length" = "Low pulse length")
+
+```
+
+Mann Kendall tests with alpha = .05. Only one variable at a time can be done, but multiple stations at a time are allowed
+
+```{r, echo=FALSE, include = FALSE}
+
+library(Kendall)
+#Use calc_Mk to do a MK for all Stations for selected variables for IHA
+
+Reversals <- calc_MK(IHA_expand, parameter = Reversals, start = 1961) %>%
+  rename("Result_Reversals" = 'P_Value')
+
+One_Day_Min <- calc_MK(IHA_expand, parameter = One_Day_Min , start = 1961) %>% rename("Result_One_Day_Min" = 'P_Value')
+
+One_Day_Max <-  calc_MK(IHA_expand, parameter = One_Day_Max , start = 1961) %>% rename("Result_1_Day_Max" = 'P_Value')
+
+Seven_Day_Min <- calc_MK(IHA_expand, parameter = Seven_Day_Min , start = 1961) %>% rename("Result_7_Day_Min" = 'P_Value')
+
+Seven_Day_Max <-  calc_MK(IHA_expand, parameter = Seven_Day_Max , start = 1961) %>% rename("Result_7_Day_Max" = 'P_Value')
+
+Thirty_Day_Min <- calc_MK(IHA_expand, parameter = Thirty_Day_Min , start = 1961) %>% rename("Result_30_Day_Min" = 'P_Value')
+
+Thirty_Day_Max <-  calc_MK(IHA_expand, parameter = Thirty_Day_Max , start = 1961) %>% rename("Result_30_Day_Max" = 'P_Value')
+
+High_pulse_number <-  calc_MK(IHA_expand, parameter = High_pulse_number , start = 1961) %>% rename("Result_High_pulse_number" = 'P_Value')
+
+Low_pulse_number <-  calc_MK(IHA_expand, parameter = Low_pulse_number , start = 1961) %>% rename("Result_Low_pulse_number" = 'P_Value')
+
+High_pulse_length <-  calc_MK(IHA_expand, parameter = High_pulse_length , start = 1961) %>% rename("Result_High_pulse_length" = 'P_Value')
+
+Low_pulse_length <-  calc_MK(IHA_expand, parameter = Low_pulse_length , start = 1961) %>% rename("Result_Low_pulse_length" = 'P_Value')
+
+#bind results together into one dataframe
+result_MK_IHA <- cbind(Reversals, One_Day_Min, One_Day_Max, Seven_Day_Min, Seven_Day_Max, Thirty_Day_Min, Thirty_Day_Max, High_pulse_number, Low_pulse_number, High_pulse_length, Low_pulse_length )
+
+
+```
+
+
+#Percent change using data before and after an event
+
+See Perc_Change_Climate_Analysis.Rmd in the Eflows files
+
+```{r}
+
+# Calculate percent change using pre and post data for one station number at a time
+#this is for IHA values specifically
+#dataframes need to be equally sized
+
+calc_percent_change(data_pre, data_post, stn, year_col)
+
+
+```
+
+#Graphs
+
+Line graph
+
+```{r}
+library(viridis)
+
+#example using reversals. this code only works for one station at a time
+IHA_07DA001 <- IHA %>% filter(STATION_NUMBER == "07DA001")
+
+ggplot(data = IHA_07DA001, aes(x =Year, y = Reversals, group = 1) ) +
+        geom_line(color = "red") +
+  ggtitle( "STN IHA_07DA001 \n Reversals") +
+  ylim(0,100) +
+  ylab("Number of Reversals")+
+  theme_bw() +
+   theme(plot.title =element_text(size = 10, hjust = .5, face = "bold")) +
+     theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+    theme(legend.background = element_rect(colour = 'black', fill = 'white', linetype='solid')) 
+```
+Boxplots
+```{r}
+
+library(viridis)
+
+IHA %>% 
+  na.omit() %>%
+  filter(STATION_NUMBER =="07DA001" ) %>%
+  select('Year', '1 Day Min', '3 Day Min', '7 Day Min', '30 Day Min', '90 Day Min',) %>%
+  pivot_longer(., cols = c('1 Day Min', '3 Day Min', '7 Day Min','30 Day Min', '90 Day Min'), names_to = "Variables", values_to = "Values") %>%
+  ggplot(aes(x = Variables, y = Values, fill = Variables), levels = c('1 Day Min', '3 Day Min', '7 Day Min','30 Day Min' , '90 Day Min')) +
+  stat_boxplot(geom = "errorbar", width = 0.25) + 
+  geom_boxplot() + 
+scale_x_discrete(limits = c('1 Day Min', '3 Day Min', '7 Day Min','30 Day Min', '90 Day Min')) +
+  scale_fill_viridis_d() +  # Use viridis palette
+  theme_bw() +
+    theme(plot.title =  element_text(size = 10, hjust = .5, face = "bold")) +
+       theme(axis.text.x = element_text(angle = 90, hjust = 1, vjust = 0.5)) +
+  ggtitle( "Station 07DA001") +
+    theme(legend.background = element_rect(colour = 'black', fill = 'white', linetype='solid')) +
+  theme(legend.title=element_text(size=8), legend.text=element_text(size=7))+
+  xlab("") +
+  ylab("Flow") 
+
+
+```
+
+
+```{r}
+```
+
